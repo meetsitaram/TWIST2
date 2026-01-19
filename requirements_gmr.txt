@@ -1,0 +1,36 @@
+# Requirements for gmr conda environment (Python 3.10)
+# Used for: Multi-camera capture, SMPL-X fitting, GMR retargeting
+#
+# Setup:
+#   conda create -n gmr python=3.10 -y
+#   conda activate gmr
+#   pip install -r requirements_gmr.txt
+#   conda install -c conda-forge libstdcxx-ng -y
+
+# Phase 1: Multi-Camera Capture
+opencv-python>=4.8.0
+mediapipe>=0.10.0
+numpy>=1.24.0
+scipy>=1.10.0
+
+# Phase 1: Calibration & Triangulation
+aniposelib>=0.4.3
+toml>=0.10.0
+tqdm>=4.65.0
+numba>=0.57.0
+
+# Phase 2: SMPL-X Fitting
+smplx>=0.1.28
+torch>=2.0.0
+trimesh>=3.21.0
+
+# Phase 3: GMR Integration
+# GMR is installed separately via: cd GMR && pip install -e .
+mujoco>=3.0.0
+
+# Communication with TWIST2
+redis>=4.5.0
+
+# Utilities
+rich>=13.0.0
+pyyaml>=6.0.0
