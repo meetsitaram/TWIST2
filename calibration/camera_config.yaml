@@ -1,0 +1,32 @@
+calibration:
+  board:
+    dictionary: DICT_4X4_50
+    marker_size: 45
+    marker_size_mm: 45
+    square_size: 60
+    square_size_mm: 60
+    squares_x: 4
+    squares_y: 6
+  thresholds:
+    max_reprojection_error: 1.0
+    min_detected_frames: 50
+camera_ids:
+- 4
+- 6
+- 2
+cameras:
+  center:
+    description: Center camera
+    id: 6
+  left:
+    description: Left camera
+    id: 4
+  right:
+    description: Right camera
+    id: 2
+capture:
+  codec: MJPG
+  fps: 30
+  resolution:
+  - 1280
+  - 720
