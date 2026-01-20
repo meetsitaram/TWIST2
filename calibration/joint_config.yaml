@@ -1,0 +1,53 @@
+# Joint mapping configuration for MediaPipe to G1 robot
+# All angles are in DEGREES for easier tuning
+# Tweak these values to calibrate the mapping
+
+# Arms-only mode: if true, only arms are controlled, legs/torso stay at defaults
+arms_only: true
+
+# Elbow mapping
+# G1 robot elbow limits: -60° to +120°
+# Based on G1 convention: higher value = more extended/straight
+elbow:
+  human_max_angle: 150  # degrees - your max elbow bend
+  robot_straight: 90   # degrees - robot value when YOUR arm is straight (extended)
+  robot_bent: -60         # degrees - robot value when YOUR arm is fully bent
+  invert: false         # try false first with these values
+
+# Shoulder pitch mapping (forward/backward)
+# scale: multiplier for the computed angle
+# offset: added to the result (degrees)
+shoulder_pitch:
+  scale: 1.0
+  offset: 0
+
+# Shoulder roll mapping (arm away from body)
+# scale: multiplier for the computed angle  
+# offset: added to the result (degrees)
+shoulder_roll:
+  scale: 1.0
+  offset: 0
+
+# Wrist mapping
+# G1 wrist has 3 DOFs: roll, pitch, yaw
+# enabled: set to false to disable wrist tracking
+# For each DOF: scale (multiplier), offset (degrees), invert (flip direction)
+wrist:
+  enabled: true
+  max_angle: 60      # degrees - clamp wrist angles to this range
+  smoothing: 0.3     # 0-1: lower = smoother but more lag (0.3 recommended)
+  
+  roll:              # palm facing up/down rotation
+    scale: 0.5
+    offset: 45
+    invert: true
+  
+  pitch:             # wrist flexion/extension (hand up/down)
+    scale: 0.5
+    offset: 0
+    invert: true
+  
+  yaw:               # radial/ulnar deviation (hand left/right)
+    scale: 0.4
+    offset: 0
+    invert: true
