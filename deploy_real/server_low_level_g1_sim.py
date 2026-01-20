@@ -361,6 +361,9 @@ class RealTimePolicyController:
                             'target_dof_pos': action_mimic.tolist()[-29:],
                         }
                         self.proprio_recordings.append(proprio_data)
+                    
+                    # Publish robot's current state to Redis for debugging
+                    self.redis_client.set("robot_current_dof_pos", json.dumps(dof_pos.tolist()))
 
                
                 # PD control
