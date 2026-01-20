@@ -4,7 +4,8 @@ import time
 import redis
 import json
 import numpy as np
-import isaacgym
+# Note: isaacgym import removed - not needed for motion server (uses MuJoCo for viz)
+# This allows running in gmr environment with modern PyTorch/CUDA
 import torch
 from rich import print
 import os
@@ -23,12 +24,13 @@ def build_mimic_obs(
     control_dt: float,
     tar_motion_steps,
     robot_type: str = "g1",
-    mask_indicator: bool = False
+    mask_indicator: bool = False,
+    device: str = "cpu"
 ):
     """
     Build the mimic_obs at time-step t_step, referencing the code in MimicRunner.
     """
-    device = torch.device("cuda")
+    device = torch.device(device)
     # Build times
     motion_times = torch.tensor([t_step * control_dt], device=device).unsqueeze(-1)
     obs_motion_times = tar_motion_steps * control_dt + motion_times
@@ -119,8 +121,21 @@ def main(args, xml_file, robot_base):
     redis_client.ping()
 
 
-    # 2. Load motion library
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # 2. Load motion library with device fallback
+    device = args.device
+    if device == "cuda":
+        # Try CUDA, fall back to CPU if it fails (e.g., incompatible GPU)
+        try:
+            test_tensor = torch.randn(10, device="cuda")
+            del test_tensor
+            print(f"[Motion Server] Using CUDA")
+        except Exception as e:
+            print(f"[Motion Server] CUDA failed ({e}), falling back to CPU")
+            device = "cpu"
+    
+    if device == "cpu":
+        print(f"[Motion Server] Using CPU")
+    
     motion_lib = MotionLib(args.motion_file, device=device)
     
     # 3. Prepare the steps array
@@ -138,7 +153,8 @@ def main(args, xml_file, robot_base):
             t_step=0,
             control_dt=control_dt,
             tar_motion_steps=tar_motion_steps_tensor,
-            robot_type=args.robot
+            robot_type=args.robot,
+            device=device
         )
     # compute num_steps based on motion length
     motion_id = torch.tensor([0], device=device, dtype=torch.long)
@@ -209,7 +225,8 @@ def main(args, xml_file, robot_base):
                 t_step=t_step,
                 control_dt=control_dt,
                 tar_motion_steps=tar_motion_steps_tensor,
-                robot_type=args.robot
+                robot_type=args.robot,
+                device=device
             )   
             
             # Convert to JSON (list) to put into Redis
@@ -291,12 +308,15 @@ if __name__ == "__main__":
     parser.add_argument("--use_remote_control", action="store_true", help="Use remote control signals from robot controller")
     parser.add_argument("--send_start_frame_as_end_frame", action="store_true", help="Use motion's first frame as end frame instead of default pose")
     parser.add_argument("--redis_ip", type=str, default="localhost", help="Redis IP")
+    parser.add_argument("--device", type=str, default="cpu", 
+                        help="Device to use: cpu or cuda (default: cpu for RTX 50xx compatibility)")
     args = parser.parse_args()
 
     args.vis = True
     
 
     print("Robot type: ", args.robot)
+    print("Device: ", args.device)
     print("Motion file: ", args.motion_file)
     print("Steps: ", args.steps)
     
