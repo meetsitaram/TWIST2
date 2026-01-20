@@ -7,7 +7,8 @@ from the triangulated 3D skeleton.
 """
 
 import numpy as np
-from scipy.spatial.transform import Rotation as R
+# Note: scipy removed to avoid numpy version conflicts in gmr environment
+# Rotation matrix to Euler conversion implemented in pure numpy below
 from typing import Optional, Tuple
 import logging
 
@@ -45,6 +46,36 @@ def compute_signed_angle(v1: np.ndarray, v2: np.ndarray, normal: np.ndarray) -> 
     if np.dot(cross, normal) < 0:
         angle = -angle
     return angle
+
+
+def rotation_matrix_to_euler_xyz(R_mat: np.ndarray) -> tuple:
+    """
+    Convert rotation matrix to Euler angles (xyz order).
+    Pure numpy implementation to avoid scipy dependency.
+    
+    Args:
+        R_mat: 3x3 rotation matrix
+        
+    Returns:
+        (roll, pitch, yaw) in radians
+    """
+    # Extract angles using standard rotation matrix decomposition
+    # For xyz order: R = Rx(roll) * Ry(pitch) * Rz(yaw)
+    
+    sy = np.sqrt(R_mat[0, 0]**2 + R_mat[1, 0]**2)
+    
+    singular = sy < 1e-6
+    
+    if not singular:
+        roll = np.arctan2(R_mat[2, 1], R_mat[2, 2])
+        pitch = np.arctan2(-R_mat[2, 0], sy)
+        yaw = np.arctan2(R_mat[1, 0], R_mat[0, 0])
+    else:
+        roll = np.arctan2(-R_mat[1, 2], R_mat[1, 1])
+        pitch = np.arctan2(-R_mat[2, 0], sy)
+        yaw = 0
+    
+    return roll, pitch, yaw
 
 
 import os
@@ -374,9 +405,8 @@ class MediaPipeToG1Direct:
         R_mat = np.column_stack([x_axis, y_axis, z_axis])
         
         try:
-            r = R.from_matrix(R_mat)
-            euler = r.as_euler('xyz', degrees=False)
-            return euler[0], euler[1], euler[2]  # roll, pitch, yaw
+            roll, pitch, yaw = rotation_matrix_to_euler_xyz(R_mat)
+            return roll, pitch, yaw
         except:
             return 0.0, 0.0, 0.0
     
