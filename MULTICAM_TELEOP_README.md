@@ -13,10 +13,75 @@ This is a camera-based alternative to VR teleoperation. It uses:
 ## Requirements
 
 1. **gmr conda environment** (Python 3.10 with MediaPipe)
-2. **Multiple USB cameras** (tested with 3 cameras)
-3. **Camera calibration** completed (see `CALIBRATION_QUICKSTART.md`)
+2. **Multiple USB cameras** (3+ cameras recommended, minimum 2)
+3. **Camera calibration** completed (see Setup section below)
 4. **Redis server** running
 5. **sim2sim.sh** running (the low-level RL controller)
+
+## Setup (First Time)
+
+If this is your first time or you've moved your cameras, complete these steps:
+
+### Step 1: Identify and Configure Cameras
+
+Run the interactive camera setup tool to identify which camera is left/center/right:
+
+```bash
+conda activate gmr
+cd TWIST2/deploy_real/utils
+python setup_cameras.py
+```
+
+This will:
+1. Detect all connected cameras
+2. Capture a test image from each camera
+3. Open the folder so you can view the images
+4. Ask you to assign positions (left, center, right)
+5. Generate `camera_config.yaml` with the correct camera IDs
+
+### Step 2: Print ChArUco Calibration Board
+
+You need a ChArUco board for camera calibration:
+
+```bash
+cd TWIST2/deploy_real/utils
+python generate_4page_large_charuco.py
+```
+
+- Print the 4 pages and assemble them into a large board
+- Mount it on a rigid surface (cardboard/foam board)
+- Measure the actual printed square size and update `calibration/camera_config.yaml` if needed
+
+### Step 3: Calibrate Cameras
+
+With the ChArUco board ready, run the calibration:
+
+```bash
+conda activate gmr
+cd TWIST2/deploy_real
+python calibrate_cameras.py
+```
+
+During calibration:
+- Wave the ChArUco board slowly in front of all cameras
+- Cover different depths (close and far)
+- Rotate the board at various angles
+- The script will auto-stop after collecting enough diverse frames (~60 per camera)
+- Results saved to `calibration/calibration.toml`
+
+### Step 4: Test Calibration
+
+Verify everything works:
+
+```bash
+cd TWIST2/deploy_real
+python test_camera_only.py
+```
+
+Look for:
+- ✅ "Arms detected" messages
+- ✅ Reprojection error < 200px
+- ✅ Detection rate > 80%
 
 ## Quick Start
 
@@ -93,13 +158,26 @@ While running, you'll see a status table:
 
 ## Finding Your Camera IDs
 
+### Quick Check (Just List IDs)
+
 ```bash
 conda activate gmr
 cd TWIST2/deploy_real
 python list_cameras.py
 ```
 
-This will show available cameras and their IDs.
+### Full Setup (Identify Positions + Generate Config)
+
+```bash
+conda activate gmr
+cd TWIST2/deploy_real/utils
+python setup_cameras.py
+```
+
+Use `setup_cameras.py` when:
+- Setting up for the first time
+- Cameras have been moved/reconnected
+- You need to identify which camera is left/center/right
 
 ## Troubleshooting
 
@@ -107,11 +185,20 @@ This will show available cameras and their IDs.
 - Make sure you're visible to at least 2 cameras
 - Check lighting conditions
 - Verify cameras are working: `python list_cameras.py`
+- Test camera-only mode: `python deploy_real/test_camera_only.py`
 
 ### High reprojection error (>300px)
-- Recalibrate cameras: `bash calibrate.sh`
+- **Camera moved?** If cameras have been moved, you must recalibrate:
+  ```bash
+  # Step 1: Update camera config (if camera IDs changed)
+  python deploy_real/utils/setup_cameras.py
+  
+  # Step 2: Recalibrate
+  python deploy_real/calibrate_cameras.py
+  ```
 - Make sure cameras haven't moved since calibration
 - Check that ChArUco board was detected in all cameras during calibration
+- Verify calibration file exists: `calibration/calibration.toml`
 
 ### Robot not moving
 - Verify `sim2sim.sh` is running
@@ -122,6 +209,13 @@ This will show available cameras and their IDs.
 - Close other GPU-intensive applications
 - Try lower resolution: `--width 640 --height 480`
 - Check CPU usage
+
+### Camera IDs changed after reconnecting
+USB camera IDs can change when cameras are reconnected. Run:
+```bash
+python deploy_real/utils/setup_cameras.py
+```
+Then recalibrate if camera positions changed.
 
 ## Architecture
 
@@ -168,10 +262,22 @@ This will show available cameras and their IDs.
 
 ## Related Files
 
+### Main Scripts
 - `deploy_real/multicam_to_twist2.py` - Main teleop script
 - `deploy_real/multicam_pose_streamer.py` - Camera capture & triangulation
 - `deploy_real/mediapipe_to_g1_direct.py` - Skeleton to joint conversion
-- `calibration/calibration.toml` - Camera calibration data
+
+### Setup & Calibration
+- `deploy_real/utils/setup_cameras.py` - Interactive camera setup tool
+- `deploy_real/utils/capture_camera_views.py` - Quick camera snapshot tool
+- `deploy_real/calibrate_cameras.py` - Camera calibration script
+- `deploy_real/utils/generate_4page_large_charuco.py` - Generate calibration board
+- `deploy_real/list_cameras.py` - List available camera IDs
+- `deploy_real/test_camera_only.py` - Test camera tracking
+
+### Configuration Files
+- `calibration/camera_config.yaml` - Camera IDs and settings
+- `calibration/calibration.toml` - Camera calibration data (intrinsic/extrinsic)
 
 ## Comparison with Hybrid Motion
 

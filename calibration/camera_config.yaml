@@ -1,32 +1,35 @@
-calibration:
-  board:
-    dictionary: DICT_4X4_50
-    marker_size: 45
-    marker_size_mm: 45
-    square_size: 60
-    square_size_mm: 60
-    squares_x: 4
-    squares_y: 6
-  thresholds:
-    max_reprojection_error: 1.0
-    min_detected_frames: 50
-camera_ids:
-- 4
-- 6
-- 2
-cameras:
-  center:
-    description: Center camera
-    id: 6
-  left:
-    description: Left camera
-    id: 4
-  right:
-    description: Right camera
-    id: 2
+# Camera Configuration for Multi-Camera Motion Capture
+# Generated: 2026-01-21 20:11:16
+#
+# Regenerate with: python deploy_real/setup_cameras.py
+
 capture:
-  codec: MJPG
-  fps: 30
   resolution:
   - 1280
   - 720
+  fps: 30
+  codec: MJPG
+cameras:
+  left:
+    id: 2
+    description: Left camera
+  center:
+    id: 1
+    description: Center camera
+  right:
+    id: 0
+    description: Right camera
+camera_ids:
+- 2
+- 1
+- 0
+calibration:
+  board:
+    squares_x: 4
+    squares_y: 6
+    square_size_mm: 60.0
+    marker_size_mm: 45.0
+    dictionary: DICT_4X4_50
+  thresholds:
+    max_reprojection_error: 1.0
+    min_detected_frames: 50
