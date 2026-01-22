@@ -812,6 +812,9 @@ def capture_calibration_data(camera_ids, resolution, detector, target_frames, ca
         sync_mode: If True, only capture when board is stable and visible to multiple cameras
     """
     
+    # Minimum corners required for calibration (OpenCV needs at least 6)
+    MIN_CORNERS_FOR_CALIBRATION = 6
+    
     # Start cameras
     recorder = MultiCameraRecorder(camera_ids, resolution)
     recorder.start()
@@ -843,6 +846,9 @@ def capture_calibration_data(camera_ids, resolution, detector, target_frames, ca
         print(f"Auto-stop after {target_frames} DIVERSE frames per camera.")
         print(f"\nDiversity filter is ON - frames too similar to existing ones are rejected.")
         print(f"If you see RED + 'MOVE!', change the board's position/angle/distance!")
+        print(f"\nIMPORTANT: Need at least {MIN_CORNERS_FOR_CALIBRATION} corners visible per frame.")
+        print(f"  - Keep the ENTIRE board in frame")
+        print(f"  - Tilt gently (avoid corners going off-screen)")
         if slow_mode:
             print(f"SLOW MODE: Saving 1 frame every {min_interval}s - take your time to cover the whole area!")
     print("\nPress 'q' to stop early, 'c' to continue past target.")
@@ -866,6 +872,7 @@ def capture_calibration_data(camera_ids, resolution, detector, target_frames, ca
             # Detect in each frame
             vis_frames = []
             current_detections = {}
+            corner_counts = {}  # Track corner counts for feedback
             current_time = time.time()
             
             for cam_id in camera_ids:
@@ -875,8 +882,14 @@ def capture_calibration_data(camera_ids, resolution, detector, target_frames, ca
                 frame = frames[cam_id]
                 corners, ids, vis_frame = detector.detect(frame)
                 
+                # Track corner count for visual feedback
                 if corners is not None:
-                    current_detections[cam_id] = {'corners': corners, 'ids': ids}
+                    corner_counts[cam_id] = len(corners)
+                    # Only accept frames with enough corners for calibration
+                    if len(corners) >= MIN_CORNERS_FOR_CALIBRATION:
+                        current_detections[cam_id] = {'corners': corners, 'ids': ids}
+                else:
+                    corner_counts[cam_id] = 0
                 
                 vis_frames.append((cam_id, vis_frame))
             
@@ -988,11 +1001,22 @@ def capture_calibration_data(camera_ids, resolution, detector, target_frames, ca
                     elif frame_status.get(cam_id) == 'similar':
                         color = (0, 0, 255)
                         status += " (MOVE!)"
+                    elif cam_id in corner_counts and 0 < corner_counts[cam_id] < MIN_CORNERS_FOR_CALIBRATION:
+                        color = (0, 140, 255)  # Orange - detected but too few corners
+                        status += f" ({corner_counts[cam_id]} corners, need {MIN_CORNERS_FOR_CALIBRATION})"
                     else:
                         color = (0, 165, 255)
                     
                 cv2.putText(vis_frame, status, (10, 30), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+                
+                # Add corner count on second line for better visibility
+                if cam_id in corner_counts:
+                    corner_status = f"Corners: {corner_counts[cam_id]}"
+                    corner_color = (0, 255, 0) if corner_counts[cam_id] >= MIN_CORNERS_FOR_CALIBRATION else (0, 140, 255)
+                    cv2.putText(vis_frame, corner_status, (10, 60), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, corner_color, 2)
+                
                 updated_vis_frames.append(vis_frame)
             
             vis_frames = updated_vis_frames
