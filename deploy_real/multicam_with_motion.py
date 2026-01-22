@@ -25,6 +25,7 @@ import redis
 import torch
 import os
 import sys
+import yaml
 
 from rich import print
 from rich.console import Console
@@ -33,7 +34,8 @@ from rich.live import Live
 
 # Add pose module to path
 script_dir = os.path.dirname(os.path.abspath(__file__))
-pose_path = os.path.join(os.path.dirname(script_dir), "pose")
+project_root = os.path.dirname(script_dir)
+pose_path = os.path.join(project_root, "pose")
 if pose_path not in sys.path:
     sys.path.insert(0, pose_path)
 
@@ -589,8 +591,8 @@ def main():
     parser = argparse.ArgumentParser(description='Hybrid motion: PKL body + camera arms')
     parser.add_argument('--motion-file', type=str, required=True,
                        help='Path to PKL motion file')
-    parser.add_argument('--camera-ids', type=str, default='4,6,2',
-                       help='Comma-separated camera IDs (default: 4,6,2)')
+    parser.add_argument('--camera-ids', type=str, default=None,
+                       help='Comma-separated camera IDs (default: read from camera_config.yaml)')
     parser.add_argument('--calibration', type=str, 
                        default='../calibration/calibration.toml',
                        help='Path to calibration.toml file')
@@ -609,8 +611,27 @@ def main():
     
     args = parser.parse_args()
     
-    # Parse camera IDs
-    camera_ids = [int(x) for x in args.camera_ids.split(',')]
+    # Load camera IDs from config if not provided via command line
+    if args.camera_ids is None:
+        config_path = os.path.join(project_root, 'calibration/camera_config.yaml')
+        if not os.path.exists(config_path):
+            print(f"[red]✗ Error: Camera config not found at {config_path}[/red]")
+            print("[yellow]Run 'python deploy_real/utils/setup_cameras.py' first![/yellow]")
+            return
+        
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        
+        camera_ids = config.get('camera_ids', [])
+        if not camera_ids:
+            print("[red]✗ Error: No camera_ids found in camera_config.yaml[/red]")
+            return
+        
+        print(f"[dim]Loaded camera IDs from config: {camera_ids}[/dim]")
+    else:
+        # Parse camera IDs from command line
+        camera_ids = [int(x) for x in args.camera_ids.split(',')]
+        print(f"[dim]Using camera IDs from command line: {camera_ids}[/dim]")
     
     # Don't initialize CUDA here - let HybridMotionStreamer do it AFTER camera init
     # to avoid GPU context conflicts between PyTorch and MediaPipe/EGL

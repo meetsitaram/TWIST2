@@ -29,6 +29,7 @@ import json
 import redis
 import sys
 import os
+import yaml
 
 from rich import print
 from rich.console import Console
@@ -38,6 +39,10 @@ from rich.table import Table
 # Import our multi-camera streamer
 from multicam_pose_streamer import MultiCamPoseStreamer
 from data_utils.params import DEFAULT_MIMIC_OBS
+
+# Get project root for config paths
+script_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(script_dir)
 
 console = Console()
 
@@ -83,6 +88,28 @@ def main(args):
     print("[bold green]╚═══════════════════════════════════════════════════╝[/bold green]")
     print()
     
+    # Load camera IDs from config if not provided via command line
+    if args.camera_ids is None:
+        config_path = os.path.join(project_root, 'calibration/camera_config.yaml')
+        if not os.path.exists(config_path):
+            print(f"[red]✗ Error: Camera config not found at {config_path}[/red]")
+            print("[yellow]Run 'python deploy_real/utils/setup_cameras.py' first![/yellow]")
+            return
+        
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        
+        camera_ids = config.get('camera_ids', [])
+        if not camera_ids:
+            print("[red]✗ Error: No camera_ids found in camera_config.yaml[/red]")
+            return
+        
+        print(f"[dim]Loaded camera IDs from config: {camera_ids}[/dim]")
+    else:
+        # Parse camera IDs from command line
+        camera_ids = [int(x) for x in args.camera_ids.split(',')]
+        print(f"[dim]Using camera IDs from command line: {camera_ids}[/dim]")
+    
     # Connect to Redis
     try:
         redis_client = redis.Redis(host=args.redis_host, port=6379, decode_responses=False)
@@ -93,8 +120,6 @@ def main(args):
         print("[yellow]Make sure Redis is running: sudo systemctl start redis-server[/yellow]")
         return
     
-    # Parse camera IDs
-    camera_ids = [int(x) for x in args.camera_ids.split(',')]
     print(f"[cyan]Initializing multi-camera capture with cameras {camera_ids}...[/cyan]")
     
     # Initialize multi-camera streamer
@@ -265,8 +290,8 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Stream multi-camera 3D pose to TWIST2')
-    parser.add_argument('--camera-ids', type=str, default='4,6,2',
-                       help='Comma-separated camera IDs (default: 4,6,2)')
+    parser.add_argument('--camera-ids', type=str, default=None,
+                       help='Comma-separated camera IDs (default: read from camera_config.yaml)')
     parser.add_argument('--calibration', type=str, 
                        default='../calibration/calibration.toml',
                        help='Path to calibration.toml file')

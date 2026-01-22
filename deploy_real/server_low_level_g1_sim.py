@@ -190,6 +190,36 @@ class RealTimePolicyController:
         self.data.qvel[:] = 0
         mujoco.mj_forward(self.model, self.data)
 
+    def check_if_fallen(self):
+        """
+        Check if robot has fallen based on torso height and orientation.
+        
+        Returns:
+            bool: True if robot has fallen, False otherwise
+        """
+        # Get torso Z position (height above ground)
+        torso_z = self.data.qpos[2]  # Z position is index 2
+        
+        # Get orientation quaternion and convert to roll/pitch
+        quat = self.data.qpos[3:7]
+        rpy = quatToEuler(quat)
+        roll, pitch = rpy[0], rpy[1]
+        
+        # Fall detection thresholds
+        MIN_HEIGHT = 0.5  # If torso drops below 0.5m, robot has likely fallen
+        MAX_ROLL = 0.8    # ~46 degrees
+        MAX_PITCH = 0.8   # ~46 degrees
+        
+        # Check if any fall condition is met
+        if torso_z < MIN_HEIGHT:
+            return True, f"height={torso_z:.2f}m"
+        if abs(roll) > MAX_ROLL:
+            return True, f"roll={np.degrees(roll):.1f}°"
+        if abs(pitch) > MAX_PITCH:
+            return True, f"pitch={np.degrees(pitch):.1f}°"
+        
+        return False, None
+
     def extract_data(self):
         """Extract robot state data"""
         n_dof = self.num_actions
@@ -239,6 +269,22 @@ class RealTimePolicyController:
             for i in pbar:
                 t_start = time.time()
                 dof_pos, dof_vel, quat, ang_vel, sim_torque = self.extract_data()
+                
+                # Check for falls (every policy step to catch early)
+                if i % self.sim_decimation == 0:
+                    has_fallen, reason = self.check_if_fallen()
+                    if has_fallen:
+                        print(f"\n[yellow]⚠️  Robot fell! ({reason})[/yellow]")
+                        print("[cyan]🔄 Auto-resetting to safe standing pose...[/cyan]")
+                        self.reset(self.mujoco_default_dof_pos)
+                        self.last_action = np.zeros(self.num_actions)
+                        # Clear velocity to prevent momentum carrying over
+                        self.data.qvel[:] = 0
+                        mujoco.mj_forward(self.model, self.data)
+                        print("[green]✓[/green] Reset complete!\n")
+                        # Short pause to let reset stabilize
+                        time.sleep(0.1)
+                        continue
                 
                 if i % self.sim_decimation == 0:
                     # Build proprioceptive observation
