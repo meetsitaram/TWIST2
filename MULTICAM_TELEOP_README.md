@@ -28,7 +28,7 @@ Run the interactive camera setup tool to identify which camera is left/center/ri
 
 ```bash
 conda activate gmr
-cd TWIST2/deploy_real/utils
+cd deploy_real/utils
 python setup_cameras.py
 ```
 
@@ -44,7 +44,7 @@ This will:
 You need a ChArUco board for camera calibration:
 
 ```bash
-cd TWIST2/deploy_real/utils
+cd deploy_real/utils
 python generate_4page_large_charuco.py
 ```
 
@@ -58,7 +58,7 @@ With the ChArUco board ready, run the calibration:
 
 ```bash
 conda activate gmr
-cd TWIST2/deploy_real
+cd deploy_real
 python calibrate_cameras.py
 ```
 
@@ -74,7 +74,7 @@ During calibration:
 Verify everything works:
 
 ```bash
-cd TWIST2/deploy_real
+cd deploy_real
 python test_camera_only.py
 ```
 
@@ -95,7 +95,6 @@ redis-server --daemonize yes
 
 ```bash
 conda activate twist2
-cd TWIST2
 bash sim2sim.sh
 ```
 
@@ -103,7 +102,7 @@ bash sim2sim.sh
 
 ```bash
 conda activate gmr
-cd TWIST2/deploy_real
+cd deploy_real
 python multicam_to_twist2.py
 ```
 
@@ -158,26 +157,13 @@ While running, you'll see a status table:
 
 ## Finding Your Camera IDs
 
-### Quick Check (Just List IDs)
-
 ```bash
 conda activate gmr
-cd TWIST2/deploy_real
+cd deploy_real
 python list_cameras.py
 ```
 
-### Full Setup (Identify Positions + Generate Config)
-
-```bash
-conda activate gmr
-cd TWIST2/deploy_real/utils
-python setup_cameras.py
-```
-
-Use `setup_cameras.py` when:
-- Setting up for the first time
-- Cameras have been moved/reconnected
-- You need to identify which camera is left/center/right
+For full setup (identify positions + generate config), see **Step 1** in the Setup section above.
 
 ## Troubleshooting
 
@@ -216,6 +202,77 @@ USB camera IDs can change when cameras are reconnected. Run:
 python deploy_real/utils/setup_cameras.py
 ```
 Then recalibrate if camera positions changed.
+
+## Motion Recording
+
+Record your movements to PKL files for training or playback.
+
+### Record Motion
+
+```bash
+conda activate gmr
+cd deploy_real
+
+# Default: 10s countdown, 30s recording
+python record_motion.py
+
+# Custom duration
+python record_motion.py --duration 60    # 60 second recording
+
+# Custom countdown
+python record_motion.py --countdown 15   # 15 seconds to get ready
+
+# Specify output file
+python record_motion.py --output ../recordings/walking_01.pkl
+```
+
+**Recording workflow:**
+1. Run the script
+2. 10 second countdown - walk to your position
+3. 30 second recording - perform your motion
+4. Auto-save and exit
+
+**Options:**
+- `--duration`: Recording length in seconds (default: 30)
+- `--countdown`: Countdown before recording (default: 10)
+- `--output`: Output file path (default: auto-generated with timestamp)
+- `--trim-start`: Seconds to trim from start (default: 1.0)
+- `--trim-end`: Seconds to trim from end (default: 1.0)
+- `--no-viz`: Disable MuJoCo visualization
+
+### Replay Motion
+
+```bash
+cd deploy_real
+
+# Play a recording
+python replay_motion.py --file ../recordings/motion_20260121_231731.pkl
+
+# Loop playback
+python replay_motion.py --file ../recordings/motion_20260121_231731.pkl --loop
+
+# Slow motion (0.5x speed)
+python replay_motion.py --file ../recordings/motion_20260121_231731.pkl --speed 0.5
+
+# Just print info (no visualization)
+python replay_motion.py --file ../recordings/motion_20260121_231731.pkl --no-viz
+```
+
+**Options:**
+- `--file`, `-f`: Path to PKL motion file (required)
+- `--speed`, `-s`: Playback speed (default: 1.0)
+- `--loop`, `-l`: Loop playback
+- `--no-viz`: Print file info only, no visualization
+
+### Recordings Location
+
+Recordings are saved to `TWIST2/recordings/` with auto-generated timestamps:
+```
+recordings/
+  motion_20260121_231731.pkl
+  motion_20260121_232045.pkl
+  ...
+```
 
 ## Architecture
 
@@ -266,6 +323,10 @@ Then recalibrate if camera positions changed.
 - `deploy_real/multicam_to_twist2.py` - Main teleop script
 - `deploy_real/multicam_pose_streamer.py` - Camera capture & triangulation
 - `deploy_real/mediapipe_to_g1_direct.py` - Skeleton to joint conversion
+
+### Recording Scripts
+- `deploy_real/record_motion.py` - Record motion to PKL files
+- `deploy_real/replay_motion.py` - Replay recorded motions
 
 ### Setup & Calibration
 - `deploy_real/utils/setup_cameras.py` - Interactive camera setup tool
