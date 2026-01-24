@@ -449,16 +449,143 @@ Max error: 0.1999
 
 ## Current Status (Jan 24, 2026)
 
-✅ **WORKING**: Whole-body IK teleoperation in kinematics mode
-- Hands and feet tracked via end-effector IK
-- Waist constrained to stay upright (±5°)
-- Dynamic pelvis height for crouching
+✅ **WORKING**: Arm-only IK teleoperation with fixed base
+- Hands tracked via end-effector IK
+- Elbows used as soft hints (5% weight)
+- Base frozen during IK (no pelvis cheating)
+- Fixed Z height at 0.75m
+- Waist roll/pitch constrained to ±5°
+- Waist yaw free for future whole-body
 - Real-time multi-camera capture
 - MuJoCo passive viewer for safe testing
 
-## Next Steps
+## Session Summary - Jan 24, 2026 (Evening)
 
-1. Add temporal smoothing for smoother motion
-2. Add relative XY locomotion tracking
-3. Deploy to real robot (send joint angles)
-4. Record teleoperated motions for playback/training
+### Major Improvements Made
+
+**1. Base Freezing (DofFreezingTask)**
+- Added `mink.DofFreezingTask` to lock all 6 floating base DOFs during IK
+- Prevents the IK solver from "cheating" by moving the pelvis
+- Z position now stays fixed at 0.75m
+- Conditional on `fixed_base` parameter for future whole-body teleop
+
+**2. Per-Joint Posture Regularization**
+- Added per-DOF costs to `mink.PostureTask`:
+  - Shoulder/elbow: 0.05 (prevents hitting joint limits)
+  - Wrist joints: 0.1 (keeps neutral since not tracked)
+  - Waist joints: 0.05 (keeps facing forward)
+  - Leg joints: 0.05 (keeps stable)
+  - Root/base: 0.001 (minimal)
+
+**3. Elbow Tracking**
+- Added elbow positions as soft IK targets (5% weight)
+- Helps guide arm pose without fighting hand tracking
+- Orientation disabled (position only)
+
+**4. Hand Tracking Error Metric**
+- Added "HAND POSITION TRACKING ERROR" to analysis tool
+- Computes actual robot hand position vs scaled human target
+- Quality ratings: EXCELLENT (<5cm), GOOD (5-10cm), FAIR (10-20cm), POOR (>20cm)
+- Added Figure 7 visualization with time series, histogram, rolling average
+
+**5. Code Organization**
+- Refactored `_setup_ik()` into modular functions:
+  - `_setup_end_effector_tasks()` - hands/elbows
+  - `_setup_posture_regularization()` - per-joint costs
+  - `_setup_waist_constraints()` - waist clamping
+  - `_setup_base_freezing()` - DofFreezingTask
+
+**6. Directory Reorganization**
+- Moved teleop episodes to `datasets/teleop_episodes/`
+- Each episode now has its own subdirectory
+- Moved charuco boards to `assets/charuco_board/`
+- Updated .gitignore for new structure
+
+### Known Issues
+
+1. **Hand tracking accuracy**: ~56cm mean error (POOR) in last recording
+   - Posture regularization may be too strong
+   - Could reduce shoulder/elbow posture cost to 0.02
+   - Could increase hand tracking weight to 2.0
+
+2. **Shoulder joint limits**: Right shoulder roll occasionally hits -129° limit
+   - Need better joint limit avoidance
+
+3. **Cross-arm coupling**: ~0.6 correlation between left/right arm movement
+   - Arms not fully independent
+
+### Analysis Commands
+
+```bash
+# Analyze episode with hand tracking metric
+python teleop_jitter_analysis.py --episode elbow_track_007 --verbose
+
+# Save plots to episode directory
+python teleop_jitter_analysis.py --episode elbow_track_007 --save --timeseries
+
+# List all episodes
+python teleop_jitter_analysis.py --list
+```
+
+### Key Files Modified
+
+| File | Changes |
+|------|---------|
+| `end_effector_ik_retarget.py` | Base freezing, per-joint posture costs, modular setup |
+| `stream_ik_teleop.py` | fixed_base=True for arm-only teleop |
+| `teleop_jitter_analysis.py` | Hand tracking error metric + Figure 7 |
+| `teleop_episode_recorder.py` | Episodes in subdirectories |
+
+## Next Steps - Whole Body Teleop
+
+### Phase 1: Improve Hand Tracking
+1. [ ] Reduce posture regularization for shoulders (0.05 → 0.02)
+2. [ ] Increase hand tracking weight (1.0 → 2.0)
+3. [ ] Add soft joint limits to prevent hitting hard limits
+4. [ ] Target: <10cm mean hand tracking error
+
+### Phase 2: Enable Lower Body
+1. [ ] Set `fixed_base=False` in stream_ik_teleop.py
+2. [ ] Re-enable foot tracking in `ROBOT_EE_BODIES`
+3. [ ] Tune leg posture regularization (may need lower cost)
+4. [ ] Handle pelvis height from skeleton foot positions
+5. [ ] Add ground contact constraint
+
+### Phase 3: Full Whole-Body Teleop
+1. [ ] Enable waist yaw tracking from human torso rotation
+2. [ ] Add temporal smoothing (One Euro filter on skeleton)
+3. [ ] Add velocity limiting on robot joints
+4. [ ] Test crouching/standing transitions
+5. [ ] Deploy to real robot
+
+### Tuning Parameters Reference
+
+```python
+# In end_effector_ik_retarget.py
+
+# End-effector task weights
+HAND_POSITION_WEIGHT = 1.0       # Primary targets
+ELBOW_POSITION_WEIGHT = 0.05    # Soft hints
+# (Orientation weights all 0.0 - position only)
+
+# Posture regularization per-DOF costs (in _setup_posture_regularization)
+costs[0:6] = 0.001   # Root (base frozen anyway)
+costs[6:18] = 0.05   # Legs (keep stable)
+costs[18:21] = 0.05  # Waist (keep facing forward)
+costs[21:25] = 0.05  # Left shoulder/elbow
+costs[25:28] = 0.1   # Left wrist (keep neutral)
+costs[28:32] = 0.05  # Right shoulder/elbow
+costs[32:35] = 0.1   # Right wrist (keep neutral)
+
+# Waist clamping (in retarget loop)
+max_waist_tilt = 5.0°  # Roll and pitch only, yaw is free
+```
+
+### Episode Recording
+
+```bash
+# Record new episode
+python stream_ik_teleop.py --record --name episode_name --duration 60 --smoothing one_euro
+
+# Episodes saved to: datasets/teleop_episodes/episode_name/episode_name.npz
+```
