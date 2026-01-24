@@ -75,3 +75,22 @@ TWIST2-clean/
 unitree_sdk2/
 
 twist2_demonstration/
+# Calibration data (keep locally, don't track)
+calibration/camera_views/
+calibration/captured_poses*/
+calibration/teleop_episodes/
+calibration/robot_poses/
+calibration/*.pkl
+calibration/*.png
+calibration/*.json
+calibration/*.toml
+
+# Recordings
+recordings/
+
+
+# Experimental/deprecated adapters
+deploy_real/mediapipe_gmr_adapter.py
+deploy_real/mediapipe_to_g1_gmr.py
+deploy_real/mediapipe_to_smplx_v2.py
+deploy_real/mediapipe_to_smplx_v3.py
