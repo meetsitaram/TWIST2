@@ -127,6 +127,7 @@ def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_dir = os.path.dirname(os.path.dirname(script_dir))
     calibration_dir = os.path.join(project_dir, "calibration")
+    charuco_dir = os.path.join(calibration_dir, "charuco_boards")
     config_path = os.path.join(calibration_dir, "camera_config.yaml")
     
     # Load config
@@ -138,9 +139,9 @@ def main():
     if args.input:
         input_path = args.input
     else:
-        # Try to find a charuco board image
+        # Try to find a charuco board image in charuco_boards subdirectory
         for name in ["charuco_board_5x3_A4.png", "charuco_board_A3.png", "charuco_board.png"]:
-            path = os.path.join(calibration_dir, name)
+            path = os.path.join(charuco_dir, name)
             if os.path.exists(path):
                 input_path = path
                 break
