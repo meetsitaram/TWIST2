@@ -372,7 +372,8 @@ def compare_episodes(episode_names: List[str]):
     metrics_list = []
     
     for name in episode_names:
-        filepath = EPISODES_DIR / f"{name}.npz"
+        # Each episode is in its own subdirectory
+        filepath = EPISODES_DIR / name / f"{name}.npz"
         if not filepath.exists():
             print(f"[Warning] Episode not found: {name}")
             continue
@@ -1392,9 +1393,12 @@ def plot_timeseries_detailed(episode: TeleopEpisode, metrics: JitterMetrics = No
 
 
 def list_episodes():
+    """List all available episodes."""
+    episodes = TeleopEpisodeRecorder.list_episodes()
     
     if not episodes:
         print("No episodes found")
+        print(f"Looking in: {EPISODES_DIR}")
         return
     
     print(f"\n{'='*60}")
@@ -1468,21 +1472,23 @@ Examples:
         return
     
     if args.episode:
-        filepath = EPISODES_DIR / f"{args.episode}.npz"
+        # Each episode is in its own subdirectory
+        episode_dir = EPISODES_DIR / args.episode
+        filepath = episode_dir / f"{args.episode}.npz"
         if not filepath.exists():
             print(f"Episode not found: {args.episode}")
-            print(f"Looking in: {EPISODES_DIR}")
+            print(f"Looking in: {episode_dir}")
             return
         
         episode = TeleopEpisodeRecorder.load(filepath)
         metrics = analyze_episode(episode)
         print_metrics(metrics, episode.name)
         
-        # Determine save directory
+        # Determine save directory (inside episode directory)
         save_dir = None
         if args.save:
             if args.save == "auto":
-                save_dir = EPISODES_DIR / f"{args.episode}_analysis"
+                save_dir = episode_dir / f"{args.episode}_analysis"
             else:
                 save_dir = Path(args.save)
             save_dir.mkdir(parents=True, exist_ok=True)

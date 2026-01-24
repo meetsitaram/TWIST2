@@ -48,7 +48,7 @@ except ImportError:
 # Paths
 SCRIPT_DIR = Path(__file__).parent
 PROJECT_ROOT = SCRIPT_DIR.parent
-EPISODES_DIR = PROJECT_ROOT / "calibration" / "teleop_episodes"
+EPISODES_DIR = PROJECT_ROOT / "datasets" / "teleop_episodes"
 
 
 @dataclass
@@ -110,7 +110,7 @@ class TeleopEpisodeRecorder:
             fps: Target frame rate
             smoothing: Smoothing method name for metadata
             smoothing_params: Smoothing parameters for metadata
-            output_dir: Where to save episodes (default: calibration/teleop_episodes)
+            output_dir: Where to save episodes (default: datasets/teleop_episodes)
             record_video: Whether to record raw camera video
             camera_ids: List of camera IDs to record (required if record_video=True)
             video_resolution: Expected video resolution (width, height)
@@ -118,23 +118,22 @@ class TeleopEpisodeRecorder:
         self.fps = fps
         self.smoothing = smoothing
         self.smoothing_params = smoothing_params or {}
-        self.output_dir = Path(output_dir) if output_dir else EPISODES_DIR
-        
-        # Video recording setup
-        self.record_video = record_video
-        self.camera_ids = camera_ids or []
-        self.video_resolution = video_resolution
-        self.video_writers: Dict[int, 'cv2.VideoWriter'] = {}
-        
-        if record_video and not HAS_CV2:
-            print("[Recorder] Warning: OpenCV not available, video recording disabled")
-            self.record_video = False
         
         # Generate name if not provided
         if name is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             name = f"episode_{timestamp}"
         self.name = name
+        
+        # Each episode gets its own subdirectory
+        base_dir = Path(output_dir) if output_dir else EPISODES_DIR
+        self.output_dir = base_dir / name
+        
+        # Video recording setup
+        self.record_video = record_video
+        self.camera_ids = camera_ids or []
+        self.video_resolution = video_resolution
+        self.video_writers: Dict[int, 'cv2.VideoWriter'] = {}
         
         # Frame storage
         self.frames: List[TeleopFrame] = []
@@ -351,14 +350,22 @@ class TeleopEpisodeRecorder:
     
     @staticmethod
     def list_episodes(episodes_dir: Path = None) -> List[Path]:
-        """List all episode files in directory."""
+        """List all episode files in directory (each episode is in its own subdir)."""
         if episodes_dir is None:
             episodes_dir = EPISODES_DIR
         
         if not episodes_dir.exists():
             return []
-            
-        return sorted(episodes_dir.glob("*.npz"))
+        
+        # Each episode is in its own subdirectory: episodes_dir/episode_name/episode_name.npz
+        episode_files = []
+        for subdir in sorted(episodes_dir.iterdir()):
+            if subdir.is_dir():
+                npz_file = subdir / f"{subdir.name}.npz"
+                if npz_file.exists():
+                    episode_files.append(npz_file)
+        
+        return episode_files
 
 
 def main():

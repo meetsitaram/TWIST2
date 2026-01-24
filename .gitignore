@@ -78,12 +78,15 @@ twist2_demonstration/
 # Calibration data (keep locally, don't track)
 calibration/camera_views/
 calibration/captured_poses*/
-calibration/teleop_episodes/
 calibration/robot_poses/
+calibration/charuco_boards/
 calibration/*.pkl
 calibration/*.png
 calibration/*.json
 calibration/*.toml
+
+# Datasets (teleop recordings, etc.)
+datasets/
 
 # Recordings
 recordings/

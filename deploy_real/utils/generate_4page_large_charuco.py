@@ -36,7 +36,7 @@ def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     deploy_dir = os.path.dirname(script_dir)
     project_dir = os.path.dirname(deploy_dir)
-    calibration_dir = os.path.join(project_dir, "calibration")
+    calibration_dir = os.path.join(project_dir, "calibration", "charuco_boards")
     os.makedirs(calibration_dir, exist_ok=True)
     
     print("=" * 60)
