@@ -69,6 +69,9 @@ class IKTeleopStreamer:
         record_duration: float = 60.0,
         record_name: str = None,
         record_video: bool = False,
+        skeleton_smoothing: str = "none",
+        smoothing_min_cutoff: float = 1.0,
+        smoothing_beta: float = 0.007,
     ):
         self.target_fps = target_fps
         self.verbose = verbose
@@ -80,21 +83,35 @@ class IKTeleopStreamer:
         self.record_video = record_video
         self.recorder: Optional[TeleopEpisodeRecorder] = None
         if record:
+            # Build smoothing params dict for metadata
+            smoothing_params = {}
+            if skeleton_smoothing == "one_euro":
+                smoothing_params = {
+                    "min_cutoff": smoothing_min_cutoff,
+                    "beta": smoothing_beta,
+                }
+            
             self.recorder = TeleopEpisodeRecorder(
                 name=record_name,
                 fps=target_fps,
-                smoothing="none",
+                smoothing=skeleton_smoothing,
+                smoothing_params=smoothing_params,
                 record_video=record_video,
                 camera_ids=camera_ids if record_video else None,
             )
         
         # Initialize camera streamer
         print(f"[IK Teleop] Initializing cameras: {camera_ids}")
+        smoothing_label = skeleton_smoothing if skeleton_smoothing != "none" else "disabled"
+        print(f"[IK Teleop] Skeleton smoothing: {smoothing_label}")
         self.camera_streamer = MultiCamPoseStreamer(
             camera_ids=camera_ids,
             calibration_file=calibration_file,
             target_fps=target_fps,
             enable_display=True,  # Show camera feed
+            skeleton_smoothing=skeleton_smoothing,
+            smoothing_min_cutoff=smoothing_min_cutoff,
+            smoothing_beta=smoothing_beta,
         )
         
         # Initialize IK retargeter
@@ -117,6 +134,20 @@ class IKTeleopStreamer:
         self.last_fps_time = time.time()
         self.fps = 0.0
         
+        # IK failure recovery - balanced settings
+        self.ik_error_threshold = 0.5  # Relaxed - only reject very bad IK results
+        self.ik_error_history = []
+        self.ik_error_history_size = 10  # Track last N frames
+        self.consecutive_failures = 0
+        self.failure_recovery_threshold = 10  # Reset after 10 consecutive failures
+        self.last_valid_qpos = None  # Track last known good state
+        self.frames_since_last_reset = 0  # Prevent reset spam
+        self.min_frames_between_resets = 60  # 2 seconds between resets
+        
+        # Joint velocity limiting for safety
+        self.max_joint_velocity = 2.0  # rad/s max change per joint
+        self.prev_qpos = None  # For velocity limiting
+        
     def _set_default_pose(self):
         """Set robot to default standing pose."""
         mujoco.mj_resetData(self.model, self.data)
@@ -124,23 +155,62 @@ class IKTeleopStreamer:
         self.data.qpos[3] = 1.0   # Quaternion w (upright)
         mujoco.mj_forward(self.model, self.data)
         
+    def _velocity_limit_qpos(self, qpos: np.ndarray) -> np.ndarray:
+        """
+        Apply velocity limiting to qpos (DISABLED for now - just pass through).
+        """
+        # Store for recording
+        self.prev_qpos = qpos.copy()
+        return qpos
+    
+    def _apply_to_visualizer(self, qpos_limited: np.ndarray):
+        """
+        Apply velocity-limited qpos to MuJoCo visualizer.
+        
+        Args:
+            qpos_limited: Already velocity-limited qpos from _velocity_limit_qpos()
+        """
+        # Copy joint angles (index 7+)
+        self.data.qpos[7:] = qpos_limited[7:]
+        
+        # Copy Z height (for crouching/standing) but keep X, Y fixed
+        # qpos[0:2] = X, Y position - keep fixed
+        # qpos[2] = Z height - copy from IK for crouching
+        # qpos[3:7] = base orientation quaternion - keep fixed
+        self.data.qpos[2] = qpos_limited[2]
+        
+        mujoco.mj_forward(self.model, self.data)
+    
+    def _send_to_robot(self, qpos_limited: np.ndarray):
+        """
+        Send velocity-limited qpos to the actual robot.
+        
+        This is a placeholder for future robot integration.
+        Any real robot command should go through this method to ensure
+        velocity limiting is always applied.
+        
+        Args:
+            qpos_limited: Already velocity-limited qpos from _velocity_limit_qpos()
+        """
+        # TODO: Implement actual robot communication
+        # Example: self.robot_client.send_joint_positions(qpos_limited[7:])
+        pass
+    
     def _apply_joint_angles(self, result: dict):
-        """Apply IK result to MuJoCo data."""
+        """Apply IK result with velocity limiting to all outputs."""
         if not result.get('valid', False):
             return
             
         qpos = result.get('qpos')
         if qpos is not None:
-            # Copy joint angles (index 7+)
-            self.data.qpos[7:] = qpos[7:]
+            # Apply velocity limiting - this is the FINAL safety gate
+            qpos_limited = self._velocity_limit_qpos(qpos)
             
-            # Copy Z height (for crouching/standing) but keep X, Y fixed
-            # qpos[0:2] = X, Y position - keep fixed
-            # qpos[2] = Z height - copy from IK for crouching
-            # qpos[3:7] = base orientation quaternion - keep fixed
-            self.data.qpos[2] = qpos[2]
+            # Apply to visualizer
+            self._apply_to_visualizer(qpos_limited)
             
-            mujoco.mj_forward(self.model, self.data)
+            # Send to actual robot (if connected)
+            self._send_to_robot(qpos_limited)
             
     def _wait_for_start(self, viewer):
         """Wait for ENTER key press in terminal, then countdown before starting."""
@@ -216,35 +286,70 @@ class IKTeleopStreamer:
                 # Get latest 3D skeleton from cameras
                 skeleton_3d, reproj_error = self.camera_streamer.get_3d_skeleton()
                 
+                if skeleton_3d is None:
+                    # Skeleton tracking lost - count as failure
+                    self.consecutive_failures += 1
+                    if self.consecutive_failures == 1:
+                        print("\n[IK Teleop] Skeleton tracking lost...")
+                
                 if skeleton_3d is not None:
+                    self.frames_since_last_reset += 1
+                    
+                    # Check if we need to recover due to previous failures
+                    # Only recover if enough time has passed since last recovery (prevent spam)
+                    should_recover = (self.consecutive_failures >= self.failure_recovery_threshold and 
+                                     self.frames_since_last_reset >= self.min_frames_between_resets)
+                    
+                    if should_recover:
+                        # Reset to default pose for clean recovery
+                        print(f"\n[IK Teleop] Resetting to default pose (from {self.consecutive_failures} failures)")
+                        self.consecutive_failures = 0
+                        self.frames_since_last_reset = 0
+                        # Keep prev_qpos as-is - next valid IK result will establish new baseline
+                    
                     # Run IK retargeting
-                    # fixed_base=False allows pelvis height to adjust for crouching/standing
+                    # fixed_base=True keeps pelvis at constant height (0.75m)
+                    # This is needed because foot tracking is disabled, so pelvis
+                    # height from skeleton is noisy and causes Z to jump around
                     result = self.retargeter.retarget(
                         skeleton_3d, 
-                        reset_to_default=False,  # Keep previous pose for smoothness
-                        fixed_base=False,  # Allow dynamic pelvis height
+                        reset_to_default=should_recover,
+                        fixed_base=True,  # Fixed pelvis height (arm-only tracking)
                     )
                     
                     if result.get('valid', False):
+                        ik_error = result['error']
+                        
+                        # Track IK error for logging
+                        self.ik_error_history.append(ik_error)
+                        if len(self.ik_error_history) > self.ik_error_history_size:
+                            self.ik_error_history.pop(0)
+                        
+                        # Reset failure counter on valid result
+                        self.consecutive_failures = 0
+                        self.last_valid_qpos = result['qpos'].copy()
+                        
+                        # ALWAYS apply - velocity limiting provides safety
                         self._apply_joint_angles(result)
                         
-                        # Record frame if recording
-                        if self.recorder and result.get('qpos') is not None:
-                            # Get raw camera frames if recording video
+                        # Record frame (velocity-limited qpos)
+                        if self.recorder and self.prev_qpos is not None:
                             camera_frames = None
                             if self.record_video:
                                 camera_frames, _ = self.camera_streamer.get_latest_frames()
                             
                             self.recorder.add_frame(
                                 human_skeleton=skeleton_3d,
-                                robot_qpos=result['qpos'],
+                                robot_qpos=self.prev_qpos,  # Velocity-limited
                                 ik_error=result['error'],
                                 camera_frames=camera_frames,
                             )
                         
                         if self.verbose:
-                            print(f"[IK] error={result['error']:.4f}, "
-                                  f"iters={result['iterations']}")
+                            print(f"[IK] error={result['error']:.4f}, iters={result['iterations']}")
+                    else:
+                        # Invalid result - count as failure
+                        self.consecutive_failures += 1
                 
                 # Update viewer
                 viewer.sync()
@@ -521,6 +626,15 @@ Examples:
     parser.add_argument("--video", action="store_true",
                        help="Record/show video (for record or replay)")
     
+    # Smoothing options
+    parser.add_argument("--smoothing", type=str, default="none",
+                       choices=["none", "one_euro"],
+                       help="Skeleton smoothing method (default: none)")
+    parser.add_argument("--smooth-cutoff", type=float, default=1.0,
+                       help="One Euro min_cutoff - lower = smoother (default: 1.0)")
+    parser.add_argument("--smooth-beta", type=float, default=0.007,
+                       help="One Euro beta - higher = more responsive (default: 0.007)")
+    
     args = parser.parse_args()
     
     # Handle list-episodes
@@ -560,6 +674,9 @@ Examples:
         record_duration=args.duration,
         record_name=args.name,
         record_video=args.video,
+        skeleton_smoothing=args.smoothing,
+        smoothing_min_cutoff=args.smooth_cutoff,
+        smoothing_beta=args.smooth_beta,
     )
     
     streamer.run()

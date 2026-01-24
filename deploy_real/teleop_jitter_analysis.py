@@ -37,6 +37,16 @@ try:
 except ImportError:
     HAS_MATPLOTLIB = False
 
+try:
+    import mujoco
+    HAS_MUJOCO = True
+except ImportError:
+    HAS_MUJOCO = False
+
+# Robot model path for hand position computation
+PROJECT_ROOT = Path(__file__).parent.parent
+ROBOT_MODEL_PATH = PROJECT_ROOT / "assets" / "g1" / "g1_mocap_29dof.xml"
+
 from teleop_episode_recorder import TeleopEpisodeRecorder, TeleopEpisode, EPISODES_DIR
 
 # MediaPipe landmark indices for key body points
@@ -439,7 +449,294 @@ def plot_comparison(episodes: List[TeleopEpisode], metrics_list: List[JitterMetr
     plt.show()
 
 
-def plot_timeseries_detailed(episode: TeleopEpisode, metrics: JitterMetrics = None):
+def print_detailed_analysis(episode: TeleopEpisode, metrics: JitterMetrics = None):
+    """Print detailed numerical analysis of the episode."""
+    
+    print(f"\n{'='*70}")
+    print(f"DETAILED NUMERICAL ANALYSIS: {episode.name}")
+    print(f"{'='*70}")
+    
+    # Basic info
+    n_frames = episode.num_frames
+    duration = episode.duration_sec
+    fps = n_frames / duration if duration > 0 else 0
+    
+    print(f"\nBasic Info:")
+    print(f"  Frames: {n_frames}")
+    print(f"  Duration: {duration:.2f}s")
+    print(f"  FPS: {fps:.1f}")
+    
+    # Extract data
+    t_ms = np.array([f.t_ms for f in episode.frames])
+    t_sec = t_ms / 1000.0
+    qpos_all = np.stack([f.robot_qpos for f in episode.frames])
+    ik_errors = np.array([f.ik_error for f in episode.frames])
+    
+    root_x = qpos_all[:, 0]
+    root_y = qpos_all[:, 1]
+    root_z = qpos_all[:, 2]
+    joints = qpos_all[:, 7:]
+    
+    # Root position statistics
+    print(f"\n{'='*50}")
+    print("ROOT POSITION STATISTICS")
+    print(f"{'='*50}")
+    print(f"  X: min={root_x.min():.4f}, max={root_x.max():.4f}, mean={root_x.mean():.4f}, std={root_x.std():.6f}")
+    print(f"  Y: min={root_y.min():.4f}, max={root_y.max():.4f}, mean={root_y.mean():.4f}, std={root_y.std():.6f}")
+    print(f"  Z: min={root_z.min():.4f}, max={root_z.max():.4f}, mean={root_z.mean():.4f}, std={root_z.std():.4f}")
+    
+    # Z position timeline
+    print(f"\n  Z Position Over Time:")
+    for t in range(0, int(duration) + 1, 10):
+        idx = np.argmin(np.abs(t_sec - t))
+        if idx < len(root_z):
+            print(f"    t={t:3d}s: Z={root_z[idx]:.4f}m")
+    
+    # Z position changes
+    z_delta = np.diff(root_z)
+    z_delta_mm = z_delta * 1000
+    print(f"\n  Z Position Frame-to-Frame Changes:")
+    print(f"    Max jump: {np.max(np.abs(z_delta_mm)):.2f}mm")
+    print(f"    Mean |delta|: {np.mean(np.abs(z_delta_mm)):.2f}mm")
+    
+    large_z_jumps = np.where(np.abs(z_delta) > 0.01)[0]
+    print(f"    Frames with Z jump > 10mm: {len(large_z_jumps)}")
+    if len(large_z_jumps) > 0:
+        print("    First 5 large Z jumps:")
+        for idx in large_z_jumps[:5]:
+            print(f"      t={t_sec[idx]:.2f}s: delta={z_delta_mm[idx]:.1f}mm (Z: {root_z[idx]:.4f} -> {root_z[idx+1]:.4f})")
+    
+    # IK Error analysis
+    print(f"\n{'='*50}")
+    print("IK ERROR STATISTICS")
+    print(f"{'='*50}")
+    print(f"  Mean: {ik_errors.mean():.4f}")
+    print(f"  Std: {ik_errors.std():.4f}")
+    print(f"  Min: {ik_errors.min():.4f}")
+    print(f"  Max: {ik_errors.max():.4f}")
+    print(f"\n  Percentiles:")
+    for p in [50, 75, 90, 95, 99]:
+        print(f"    {p}th: {np.percentile(ik_errors, p):.4f}")
+    
+    # High IK error regions
+    high_ik_threshold = 0.15
+    high_ik_idx = np.where(ik_errors > high_ik_threshold)[0]
+    print(f"\n  Frames with IK error > {high_ik_threshold}: {len(high_ik_idx)} ({100*len(high_ik_idx)/n_frames:.1f}%)")
+    
+    if len(high_ik_idx) > 0 and len(high_ik_idx) < 50:
+        print("  High IK error occurrences:")
+        for idx in high_ik_idx[:10]:
+            print(f"    t={t_sec[idx]:.2f}s: error={ik_errors[idx]:.4f}, Z={root_z[idx]:.4f}")
+    
+    # Joint velocity analysis
+    print(f"\n{'='*50}")
+    print("JOINT VELOCITY ANALYSIS")
+    print(f"{'='*50}")
+    
+    joint_delta = np.diff(joints, axis=0)
+    joint_vel = joint_delta * fps  # rad/s
+    
+    max_vel_per_frame = np.max(np.abs(joint_vel), axis=1)
+    print(f"  Max velocity across all joints: {max_vel_per_frame.max():.2f} rad/s")
+    print(f"  Mean max velocity: {max_vel_per_frame.mean():.2f} rad/s")
+    
+    # Frames exceeding velocity limit
+    vel_limit = 2.0
+    high_vel_frames = np.where(max_vel_per_frame > vel_limit)[0]
+    print(f"  Frames exceeding {vel_limit} rad/s: {len(high_vel_frames)} ({100*len(high_vel_frames)/len(max_vel_per_frame):.1f}%)")
+    
+    if len(high_vel_frames) > 0:
+        print("  First 5 high velocity occurrences:")
+        for idx in high_vel_frames[:5]:
+            joint_idx = np.argmax(np.abs(joint_vel[idx]))
+            joint_name = JOINT_NAMES[joint_idx] if joint_idx < len(JOINT_NAMES) else f"joint_{joint_idx}"
+            print(f"    t={t_sec[idx]:.2f}s: {joint_name} = {joint_vel[idx, joint_idx]:.2f} rad/s")
+    
+    # Ground check
+    print(f"\n{'='*50}")
+    print("GROUND CONTACT CHECK")
+    print(f"{'='*50}")
+    
+    normal_z = 0.75
+    above_threshold = 0.85
+    below_threshold = 0.5
+    
+    above_ground = np.where(root_z > above_threshold)[0]
+    below_ground = np.where(root_z < below_threshold)[0]
+    
+    print(f"  Normal standing Z: ~{normal_z}m")
+    print(f"  Frames with Z > {above_threshold}m (floating): {len(above_ground)} ({100*len(above_ground)/n_frames:.1f}%)")
+    print(f"  Frames with Z < {below_threshold}m (too low): {len(below_ground)} ({100*len(below_ground)/n_frames:.1f}%)")
+    
+    if len(above_ground) > 0:
+        print("  First 3 'floating' occurrences:")
+        for idx in above_ground[:3]:
+            print(f"    t={t_sec[idx]:.2f}s: Z={root_z[idx]:.4f}m")
+    
+    # Human skeleton analysis
+    if episode.frames[0].human_skeleton is not None:
+        skeleton_all = np.stack([f.human_skeleton for f in episode.frames])
+        
+        print(f"\n{'='*50}")
+        print("HUMAN SKELETON ANALYSIS")
+        print(f"{'='*50}")
+        
+        # Wrist velocities
+        left_wrist = skeleton_all[:, 15, :]
+        right_wrist = skeleton_all[:, 16, :]
+        
+        left_wrist_delta = np.diff(left_wrist, axis=0)
+        right_wrist_delta = np.diff(right_wrist, axis=0)
+        
+        left_wrist_speed = np.linalg.norm(left_wrist_delta, axis=1) * fps
+        right_wrist_speed = np.linalg.norm(right_wrist_delta, axis=1) * fps
+        
+        print(f"  Left wrist: max_speed={left_wrist_speed.max():.2f}m/s, mean={left_wrist_speed.mean():.2f}m/s")
+        print(f"  Right wrist: max_speed={right_wrist_speed.max():.2f}m/s, mean={right_wrist_speed.mean():.2f}m/s")
+        
+        high_speed_threshold = 2.0
+        high_left = np.where(left_wrist_speed > high_speed_threshold)[0]
+        high_right = np.where(right_wrist_speed > high_speed_threshold)[0]
+        print(f"  Frames with wrist speed > {high_speed_threshold}m/s: left={len(high_left)}, right={len(high_right)}")
+    
+    # Hand Position Tracking Error (the key metric!)
+    if HAS_MUJOCO and ROBOT_MODEL_PATH.exists():
+        print(f"\n{'='*50}")
+        print("HAND POSITION TRACKING ERROR")
+        print(f"{'='*50}")
+        
+        try:
+            model = mujoco.MjModel.from_xml_path(str(ROBOT_MODEL_PATH))
+            mdata = mujoco.MjData(model)
+            
+            # Body IDs
+            left_hand_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "left_palm_link")
+            right_hand_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "right_palm_link")
+            pelvis_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
+            
+            # MediaPipe indices
+            MP_LEFT_WRIST, MP_RIGHT_WRIST = 15, 16
+            MP_LEFT_HIP, MP_RIGHT_HIP = 23, 24
+            MP_LEFT_SHOULDER, MP_RIGHT_SHOULDER = 11, 12
+            
+            # Robot arm length (computed from default pose)
+            mujoco.mj_resetData(model, mdata)
+            mdata.qpos[2] = 0.75
+            mdata.qpos[3] = 1.0
+            mujoco.mj_forward(model, mdata)
+            
+            left_shoulder_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "left_shoulder_roll_link")
+            robot_shoulder = mdata.xpos[left_shoulder_id]
+            robot_hand = mdata.xpos[left_hand_id]
+            robot_arm_len = np.linalg.norm(robot_hand - robot_shoulder)
+            
+            left_errors = []
+            right_errors = []
+            
+            # Sample every 5 frames for speed
+            sample_frames = range(0, n_frames, 5)
+            skeleton_all = np.stack([f.human_skeleton for f in episode.frames])
+            
+            for idx in sample_frames:
+                skel = skeleton_all[idx]
+                qpos = qpos_all[idx]
+                
+                # Human pelvis-relative wrist positions
+                human_pelvis = (skel[MP_LEFT_HIP] + skel[MP_RIGHT_HIP]) / 2
+                human_left = skel[MP_LEFT_WRIST] - human_pelvis
+                human_right = skel[MP_RIGHT_WRIST] - human_pelvis
+                
+                # Human arm length for scaling
+                l_shoulder = skel[MP_LEFT_SHOULDER] - human_pelvis
+                l_wrist = skel[MP_LEFT_WRIST] - human_pelvis
+                human_arm_len = np.linalg.norm(l_wrist - l_shoulder)
+                
+                if human_arm_len > 0.1:
+                    arm_scale = robot_arm_len / human_arm_len
+                else:
+                    arm_scale = 0.46
+                
+                # Scaled targets
+                target_left = human_left * arm_scale
+                target_right = human_right * arm_scale
+                
+                # Robot hand positions
+                mdata.qpos[:] = qpos
+                mujoco.mj_forward(model, mdata)
+                robot_pelvis = mdata.xpos[pelvis_id]
+                robot_left = mdata.xpos[left_hand_id] - robot_pelvis
+                robot_right = mdata.xpos[right_hand_id] - robot_pelvis
+                
+                left_errors.append(np.linalg.norm(robot_left - target_left))
+                right_errors.append(np.linalg.norm(robot_right - target_right))
+            
+            left_errors = np.array(left_errors)
+            right_errors = np.array(right_errors)
+            all_errors = np.concatenate([left_errors, right_errors])
+            
+            print(f"  Left hand:  mean={left_errors.mean()*100:.1f}cm, max={left_errors.max()*100:.1f}cm")
+            print(f"  Right hand: mean={right_errors.mean()*100:.1f}cm, max={right_errors.max()*100:.1f}cm")
+            print(f"  Overall:    mean={all_errors.mean()*100:.1f}cm, max={all_errors.max()*100:.1f}cm")
+            
+            # Categorize tracking quality
+            mean_err = all_errors.mean() * 100
+            if mean_err < 5:
+                quality = "EXCELLENT (<5cm)"
+            elif mean_err < 10:
+                quality = "GOOD (5-10cm)"
+            elif mean_err < 20:
+                quality = "FAIR (10-20cm)"
+            else:
+                quality = "POOR (>20cm)"
+            print(f"  Tracking quality: {quality}")
+            
+        except Exception as e:
+            print(f"  Error computing hand tracking: {e}")
+    
+    # Correlation analysis
+    print(f"\n{'='*50}")
+    print("CORRELATION ANALYSIS")
+    print(f"{'='*50}")
+    
+    z_ik_corr = np.corrcoef(root_z, ik_errors)[0, 1]
+    print(f"  Z position vs IK error: {z_ik_corr:.4f}")
+    
+    # Problem summary
+    print(f"\n{'='*50}")
+    print("PROBLEM SUMMARY")
+    print(f"{'='*50}")
+    
+    problems = []
+    
+    # Check hand tracking (if computed)
+    if 'all_errors' in dir() and len(all_errors) > 0:
+        mean_hand_err = all_errors.mean() * 100
+        if mean_hand_err > 20:
+            problems.append(f"Poor hand tracking: {mean_hand_err:.1f}cm mean error")
+        elif mean_hand_err > 10:
+            problems.append(f"Fair hand tracking: {mean_hand_err:.1f}cm mean error")
+    
+    if len(high_ik_idx) > n_frames * 0.05:
+        problems.append(f"High IK error in {100*len(high_ik_idx)/n_frames:.1f}% of frames")
+    if len(above_ground) > 0:
+        problems.append(f"Robot floats above ground in {len(above_ground)} frames")
+    if len(below_ground) > 0:
+        problems.append(f"Robot too low in {len(below_ground)} frames")
+    if len(high_vel_frames) > n_frames * 0.01:
+        problems.append(f"Joint velocity exceeds limit in {100*len(high_vel_frames)/len(max_vel_per_frame):.1f}% of frames")
+    if len(large_z_jumps) > 10:
+        problems.append(f"Z position has {len(large_z_jumps)} large jumps (>10mm)")
+    
+    if problems:
+        for i, p in enumerate(problems, 1):
+            print(f"  {i}. {p}")
+    else:
+        print("  No major problems detected!")
+    
+    print(f"\n{'='*70}\n")
+
+
+def plot_timeseries_detailed(episode: TeleopEpisode, metrics: JitterMetrics = None, save_dir: Path = None):
     """
     Generate comprehensive time-series plots showing frame-by-frame fluctuations.
     
@@ -922,8 +1219,176 @@ def plot_timeseries_detailed(episode: TeleopEpisode, metrics: JitterMetrics = No
     
     plt.tight_layout()
     
-    print(f"\n[Analysis] Generated 6 figure windows. Close all to continue.")
-    plt.show()
+    # =========================================================================
+    # FIGURE 7: Hand Position Tracking Error (the key metric!)
+    # =========================================================================
+    fig7 = None
+    if HAS_MUJOCO and ROBOT_MODEL_PATH.exists():
+        try:
+            model = mujoco.MjModel.from_xml_path(str(ROBOT_MODEL_PATH))
+            mdata = mujoco.MjData(model)
+            
+            # Body IDs
+            left_hand_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "left_palm_link")
+            right_hand_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "right_palm_link")
+            pelvis_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
+            
+            # Robot arm length
+            left_shoulder_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "left_shoulder_roll_link")
+            mujoco.mj_resetData(model, mdata)
+            mdata.qpos[2] = 0.75
+            mdata.qpos[3] = 1.0
+            mujoco.mj_forward(model, mdata)
+            robot_arm_len = np.linalg.norm(mdata.xpos[left_hand_id] - mdata.xpos[left_shoulder_id])
+            
+            # MediaPipe indices
+            MP_LEFT_WRIST, MP_RIGHT_WRIST = 15, 16
+            MP_LEFT_HIP, MP_RIGHT_HIP = 23, 24
+            MP_LEFT_SHOULDER = 11
+            
+            left_errors = []
+            right_errors = []
+            sample_times = []
+            
+            for idx in range(0, n_frames, 3):  # Sample every 3 frames
+                skel = skeleton_all[idx]
+                qpos = qpos_all[idx]
+                
+                human_pelvis = (skel[MP_LEFT_HIP] + skel[MP_RIGHT_HIP]) / 2
+                human_left = skel[MP_LEFT_WRIST] - human_pelvis
+                human_right = skel[MP_RIGHT_WRIST] - human_pelvis
+                
+                l_shoulder = skel[MP_LEFT_SHOULDER] - human_pelvis
+                l_wrist = skel[MP_LEFT_WRIST] - human_pelvis
+                human_arm_len = np.linalg.norm(l_wrist - l_shoulder)
+                arm_scale = robot_arm_len / human_arm_len if human_arm_len > 0.1 else 0.46
+                
+                target_left = human_left * arm_scale
+                target_right = human_right * arm_scale
+                
+                mdata.qpos[:] = qpos
+                mujoco.mj_forward(model, mdata)
+                robot_pelvis = mdata.xpos[pelvis_id]
+                robot_left = mdata.xpos[left_hand_id] - robot_pelvis
+                robot_right = mdata.xpos[right_hand_id] - robot_pelvis
+                
+                left_errors.append(np.linalg.norm(robot_left - target_left) * 100)  # in cm
+                right_errors.append(np.linalg.norm(robot_right - target_right) * 100)
+                sample_times.append(t_sec[idx])
+            
+            left_errors = np.array(left_errors)
+            right_errors = np.array(right_errors)
+            sample_times = np.array(sample_times)
+            
+            fig7, axes7 = plt.subplots(2, 2, figsize=(14, 8))
+            fig7.suptitle(f"Hand Position Tracking Error - {episode.name}", fontsize=14, fontweight='bold')
+            
+            # Time series plot
+            ax = axes7[0, 0]
+            ax.plot(sample_times, left_errors, 'b-', alpha=0.7, label='Left hand')
+            ax.plot(sample_times, right_errors, 'r-', alpha=0.7, label='Right hand')
+            ax.axhline(y=10, color='green', linestyle='--', alpha=0.5, label='Good (<10cm)')
+            ax.axhline(y=20, color='orange', linestyle='--', alpha=0.5, label='Fair (<20cm)')
+            ax.set_xlabel("Time (s)")
+            ax.set_ylabel("Position Error (cm)")
+            ax.set_title("Hand Tracking Error Over Time")
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            
+            # Histogram
+            ax = axes7[0, 1]
+            ax.hist(left_errors, bins=30, alpha=0.5, label=f'Left (mean={left_errors.mean():.1f}cm)', color='blue')
+            ax.hist(right_errors, bins=30, alpha=0.5, label=f'Right (mean={right_errors.mean():.1f}cm)', color='red')
+            ax.axvline(x=10, color='green', linestyle='--', alpha=0.7)
+            ax.axvline(x=20, color='orange', linestyle='--', alpha=0.7)
+            ax.set_xlabel("Position Error (cm)")
+            ax.set_ylabel("Count")
+            ax.set_title("Error Distribution")
+            ax.legend()
+            
+            # Rolling average
+            ax = axes7[1, 0]
+            window = min(30, len(left_errors) // 5)
+            if window > 1:
+                left_smooth = np.convolve(left_errors, np.ones(window)/window, mode='valid')
+                right_smooth = np.convolve(right_errors, np.ones(window)/window, mode='valid')
+                t_smooth = sample_times[window-1:]
+                ax.plot(t_smooth, left_smooth, 'b-', linewidth=2, label='Left (smoothed)')
+                ax.plot(t_smooth, right_smooth, 'r-', linewidth=2, label='Right (smoothed)')
+            ax.axhline(y=10, color='green', linestyle='--', alpha=0.5)
+            ax.axhline(y=20, color='orange', linestyle='--', alpha=0.5)
+            ax.set_xlabel("Time (s)")
+            ax.set_ylabel("Position Error (cm)")
+            ax.set_title(f"Rolling Average ({window}-sample window)")
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            
+            # Summary text
+            ax = axes7[1, 1]
+            ax.axis('off')
+            
+            all_errors = np.concatenate([left_errors, right_errors])
+            mean_err = all_errors.mean()
+            if mean_err < 5:
+                quality = "EXCELLENT"
+                color = "green"
+            elif mean_err < 10:
+                quality = "GOOD"
+                color = "lightgreen"
+            elif mean_err < 20:
+                quality = "FAIR"
+                color = "orange"
+            else:
+                quality = "POOR"
+                color = "red"
+            
+            summary = f"Hand Tracking Summary\n"
+            summary += "=" * 30 + "\n\n"
+            summary += f"Left Hand:\n"
+            summary += f"  Mean:  {left_errors.mean():6.1f} cm\n"
+            summary += f"  Max:   {left_errors.max():6.1f} cm\n"
+            summary += f"  Std:   {left_errors.std():6.1f} cm\n\n"
+            summary += f"Right Hand:\n"
+            summary += f"  Mean:  {right_errors.mean():6.1f} cm\n"
+            summary += f"  Max:   {right_errors.max():6.1f} cm\n"
+            summary += f"  Std:   {right_errors.std():6.1f} cm\n\n"
+            summary += f"Overall:\n"
+            summary += f"  Mean:  {mean_err:6.1f} cm\n"
+            summary += f"  Quality: {quality}\n"
+            
+            ax.text(0.1, 0.95, summary, transform=ax.transAxes, fontsize=11,
+                    verticalalignment='top', fontfamily='monospace',
+                    bbox=dict(boxstyle='round', facecolor=color, alpha=0.3))
+            
+            plt.tight_layout()
+            
+        except Exception as e:
+            print(f"[Warning] Could not generate hand tracking plot: {e}")
+            fig7 = None
+    
+    # Save or show figures
+    if save_dir:
+        figures = [
+            (fig1, "01_skeleton_positions.png"),
+            (fig2, "02_skeleton_deltas.png"),
+            (fig3, "03_robot_joints.png"),
+            (fig4, "04_joint_velocities.png"),
+            (fig5, "05_end_effector.png"),
+            (fig6, "06_summary.png"),
+        ]
+        if fig7 is not None:
+            figures.append((fig7, "07_hand_tracking.png"))
+        print(f"\n[Analysis] Saving {len(figures)} figures to: {save_dir}")
+        for fig, filename in figures:
+            filepath = save_dir / filename
+            fig.savefig(filepath, dpi=150, bbox_inches='tight')
+            print(f"  Saved: {filename}")
+            plt.close(fig)
+        print(f"\n[Analysis] All plots saved. View them in: {save_dir}")
+    else:
+        num_figs = 7 if fig7 is not None else 6
+        print(f"\n[Analysis] Generated {num_figs} figure windows. Close all to continue.")
+        plt.show()
 
 
 def list_episodes():
@@ -975,7 +1440,16 @@ Examples:
     parser.add_argument("--plot", "-p", action="store_true", help="Show basic plots")
     parser.add_argument("--timeseries", "-t", action="store_true", 
                        help="Show detailed time-series plots (skeleton, joints, velocities)")
+    parser.add_argument("--save", "-s", nargs="?", const="auto", default=None,
+                       help="Save plots to files instead of showing. Optionally specify output dir.")
+    parser.add_argument("--verbose", "-v", action="store_true",
+                       help="Print detailed numerical analysis")
     args = parser.parse_args()
+    
+    # If --save is specified, use non-interactive backend
+    if args.save:
+        import matplotlib
+        matplotlib.use('Agg')
     
     if args.list:
         list_episodes()
@@ -1004,8 +1478,22 @@ Examples:
         metrics = analyze_episode(episode)
         print_metrics(metrics, episode.name)
         
+        # Determine save directory
+        save_dir = None
+        if args.save:
+            if args.save == "auto":
+                save_dir = EPISODES_DIR / f"{args.episode}_analysis"
+            else:
+                save_dir = Path(args.save)
+            save_dir.mkdir(parents=True, exist_ok=True)
+            print(f"\n[Save] Plots will be saved to: {save_dir}")
+        
+        # Print verbose numerical analysis
+        if args.verbose or args.save:
+            print_detailed_analysis(episode, metrics)
+        
         if args.timeseries and HAS_MATPLOTLIB:
-            plot_timeseries_detailed(episode, metrics)
+            plot_timeseries_detailed(episode, metrics, save_dir=save_dir)
         elif args.plot and HAS_MATPLOTLIB:
             plot_episode(episode, metrics)
         return
