@@ -581,11 +581,136 @@ costs[32:35] = 0.1   # Right wrist (keep neutral)
 max_waist_tilt = 5.0°  # Roll and pitch only, yaw is free
 ```
 
-### Episode Recording
+## Episode Workflow Scripts
+
+### 1. Recording Episodes (`stream_ik_teleop.py`)
+
+Live IK teleoperation with optional recording:
 
 ```bash
-# Record new episode
+# Just run teleop (no recording)
+python stream_ik_teleop.py
+
+# Record 60-second episode with One Euro smoothing
 python stream_ik_teleop.py --record --name episode_name --duration 60 --smoothing one_euro
 
-# Episodes saved to: datasets/teleop_episodes/episode_name/episode_name.npz
+# Record with video from cameras
+python stream_ik_teleop.py --record --name episode_name --duration 60 --video
+```
+
+**What gets saved:**
+- `datasets/teleop_episodes/episode_name/episode_name.npz` - Skeleton + robot data
+- `datasets/teleop_episodes/episode_name/episode_name_cam0.mp4` - Camera video (if --video)
+
+**Controls:**
+- ENTER: Start teleop (10-second countdown)
+- ESC: Stop and exit
+
+### 2. Analyzing Episodes (`teleop_jitter_analysis.py`)
+
+Comprehensive jitter and tracking quality analysis:
+
+```bash
+# List all available episodes
+python teleop_jitter_analysis.py --list
+
+# Quick analysis with metrics
+python teleop_jitter_analysis.py --episode elbow_track_007
+
+# Detailed numerical analysis
+python teleop_jitter_analysis.py --episode elbow_track_007 --verbose
+
+# Generate and save all plots
+python teleop_jitter_analysis.py --episode elbow_track_007 --save --timeseries
+
+# Compare multiple episodes
+python teleop_jitter_analysis.py --compare baseline_001 elbow_track_007
+```
+
+**Key Metrics Reported:**
+- Velocity variance per joint group
+- Acceleration RMS
+- Max joint velocity
+- Z position stability
+- **Hand position tracking error** (the key quality metric!)
+- IK error statistics
+
+**Plots Generated (with --save --timeseries):**
+1. `01_skeleton_positions.png` - Human skeleton landmarks over time
+2. `02_skeleton_deltas.png` - Frame-to-frame skeleton changes
+3. `03_robot_joints.png` - Robot joint angles over time
+4. `04_joint_velocities.png` - Joint velocities and accelerations
+5. `05_end_effector.png` - End-effector positions
+6. `06_summary.png` - Summary statistics
+7. `07_hand_tracking.png` - **Hand tracking error time series**
+
+### 3. Episode Data Format
+
+Each episode `.npz` contains:
+
+```python
+import numpy as np
+data = np.load("datasets/teleop_episodes/episode_name/episode_name.npz", allow_pickle=True)
+
+# Available arrays:
+data['t_ms']           # (N,) Timestamps in milliseconds
+data['human_skeleton'] # (N, 33, 3) MediaPipe skeleton per frame
+data['robot_qpos']     # (N, 36) Robot qpos per frame [x,y,z,qw,qx,qy,qz,joints...]
+data['ik_error']       # (N,) IK error per frame
+data['metadata']       # JSON string with episode info
+```
+
+### 4. Episode Recorder API (`teleop_episode_recorder.py`)
+
+For programmatic use:
+
+```python
+from teleop_episode_recorder import TeleopEpisodeRecorder, TeleopEpisode
+
+# Create recorder
+recorder = TeleopEpisodeRecorder(
+    name="my_episode",
+    fps=30,
+    smoothing="one_euro",
+    smoothing_params={"min_cutoff": 1.0, "beta": 0.007},
+)
+
+# Record frames
+recorder.start()
+recorder.add_frame(
+    human_skeleton=skeleton_3d,  # (33, 3) array
+    robot_qpos=qpos,             # (36,) array
+    ik_error=error,              # float
+)
+recorder.stop()
+filepath = recorder.save()
+
+# Load episode
+episode = TeleopEpisodeRecorder.load(filepath)
+print(f"Frames: {episode.num_frames}, Duration: {episode.duration_sec}s")
+
+# List all episodes
+episodes = TeleopEpisodeRecorder.list_episodes()
+```
+
+### 5. Directory Structure
+
+```
+TWIST2/
+├── datasets/
+│   └── teleop_episodes/
+│       ├── baseline_001/
+│       │   ├── baseline_001.npz
+│       │   ├── baseline_001_cam0.mp4
+│       │   └── baseline_001_analysis/
+│       │       ├── 01_skeleton_positions.png
+│       │       └── ...
+│       ├── elbow_track_007/
+│       │   ├── elbow_track_007.npz
+│       │   └── elbow_track_007_analysis/
+│       └── ...
+└── deploy_real/
+    ├── stream_ik_teleop.py        # Recording
+    ├── teleop_jitter_analysis.py  # Analysis
+    └── teleop_episode_recorder.py # Core API
 ```
