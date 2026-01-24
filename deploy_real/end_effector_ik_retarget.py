@@ -34,9 +34,11 @@ from scipy.spatial.transform import Rotation as R
 
 try:
     import mink
+    from mink.tasks import DofFreezingTask
     HAS_MINK = True
 except ImportError:
     HAS_MINK = False
+    DofFreezingTask = None
     print("Warning: mink not available. Install with: pip install mink")
 
 try:
@@ -79,12 +81,15 @@ MP_LEFT_FOOT_INDEX = 31
 MP_RIGHT_FOOT_INDEX = 32
 
 # Robot body names for each end-effector
-# 'torso' uses waist_roll_link for orientation constraint (keeps body upright)
+# NOTE: Foot tracking disabled - causes legs to float/be unstable
+#       Tracking hands + elbows for better arm poses
 ROBOT_EE_BODIES = {
     'left_hand': 'left_wrist_yaw_link',
     'right_hand': 'right_wrist_yaw_link',
-    'left_foot': 'left_ankle_roll_link',
-    'right_foot': 'right_ankle_roll_link',
+    'left_elbow': 'left_elbow_link',      # Added for better arm tracking
+    'right_elbow': 'right_elbow_link',    # Added for better arm tracking
+    # 'left_foot': 'left_ankle_roll_link',   # Disabled - causes floating legs
+    # 'right_foot': 'right_ankle_roll_link', # Disabled - causes floating legs
 }
 
 # Separate orientation-only constraint for torso (no position, just keep upright)
@@ -281,6 +286,7 @@ def extract_human_end_effectors(skeleton_3d: np.ndarray) -> dict:
         MP_LEFT_SHOULDER, MP_RIGHT_SHOULDER, MP_LEFT_HIP, MP_RIGHT_HIP,
         MP_LEFT_INDEX, MP_RIGHT_INDEX, MP_LEFT_HEEL, MP_RIGHT_HEEL,
         MP_LEFT_FOOT_INDEX, MP_RIGHT_FOOT_INDEX, MP_LEFT_PINKY, MP_RIGHT_PINKY,
+        MP_LEFT_ELBOW, MP_RIGHT_ELBOW,  # Added for elbow tracking
     ]
     for idx in critical_landmarks:
         if idx < len(skeleton_arr) and np.any(np.isnan(skeleton_arr[idx])):
@@ -330,6 +336,23 @@ def extract_human_end_effectors(skeleton_3d: np.ndarray) -> dict:
         'orientation': rotation_matrix_to_quat(r_hand_R),
         'R_mat': r_hand_R,
         'axes': {'forward': r_hand_forward, 'up': r_hand_up, 'right': r_hand_right}
+    }
+    
+    # === LEFT ELBOW ===
+    # Position only (no orientation needed for elbow)
+    end_effectors['left_elbow'] = {
+        'position': l_elbow - pelvis,
+        'orientation': np.array([1.0, 0.0, 0.0, 0.0]),  # Identity
+        'R_mat': np.eye(3),
+        'axes': None
+    }
+    
+    # === RIGHT ELBOW ===
+    end_effectors['right_elbow'] = {
+        'position': r_elbow - pelvis,
+        'orientation': np.array([1.0, 0.0, 0.0, 0.0]),  # Identity
+        'R_mat': np.eye(3),
+        'axes': None
     }
     
     # === LEFT FOOT ===
@@ -525,30 +548,161 @@ class EndEffectorIKRetargeter:
             print(f"[IK] Robot leg length: {self.robot_leg_length:.3f}m")
     
     def _setup_ik(self):
-        """Setup mink IK configuration and tasks."""
+        """Setup mink IK configuration and all tasks."""
         self.configuration = mink.Configuration(self.model)
         self.ik_limits = [mink.ConfigurationLimit(self.model)]
         
-        # Create tasks for each end-effector (position + orientation)
+        # Setup individual components (each can be tuned independently)
+        self._setup_end_effector_tasks()
+        self._setup_posture_regularization()
+        self._setup_waist_constraints()
+        self._setup_base_freezing()
+        
+        # Combine all tasks for IK solver
+        self.all_tasks = list(self.tasks.values())
+        if self.posture_task is not None:
+            self.all_tasks.append(self.posture_task)
+    
+    def _setup_end_effector_tasks(self):
+        """
+        Setup position tracking tasks for each end-effector.
+        
+        KEY INSIGHT: Position-only tracking for hands/elbows works much better
+        than position+orientation. Orientation constraints fight against position
+        goals, causing IK to fail to reach targets.
+        
+        Weights:
+        - Hands: 100% weight (primary targets)
+        - Elbows: 5% weight (soft hint to guide arm pose, prevents unnatural bends)
+        - Feet: disabled (causes floating issues)
+        """
         self.tasks = {}
+        
+        # Weight configuration (tune these to adjust behavior)
+        HAND_POSITION_WEIGHT = 1.0       # Full weight for hand position
+        HAND_ORIENTATION_WEIGHT = 0.0    # No orientation (was causing IK failures)
+        ELBOW_POSITION_WEIGHT = 0.05     # Low weight - just a soft hint
+        ELBOW_ORIENTATION_WEIGHT = 0.0   # No orientation
+        
         for ee_name, body_name in ROBOT_EE_BODIES.items():
+            if 'hand' in ee_name:
+                position_cost = self.position_weight * HAND_POSITION_WEIGHT
+                orientation_cost = HAND_ORIENTATION_WEIGHT
+            elif 'elbow' in ee_name:
+                position_cost = self.position_weight * ELBOW_POSITION_WEIGHT
+                orientation_cost = ELBOW_ORIENTATION_WEIGHT
+            else:
+                # Default for other body parts (feet, etc.)
+                position_cost = self.position_weight
+                orientation_cost = self.orientation_weight
+            
             task = mink.FrameTask(
                 frame_name=body_name,
                 frame_type="body",
-                position_cost=self.position_weight,
-                orientation_cost=self.orientation_weight,
+                position_cost=position_cost,
+                orientation_cost=orientation_cost,
                 lm_damping=1.0,
             )
             self.tasks[ee_name] = task
+    
+    def _setup_posture_regularization(self):
+        """
+        Setup posture regularization to prevent joints from hitting limits.
         
-        # Store waist joint indices for clamping during IK
+        KEY INSIGHT: Without this, shoulder_roll joints were getting stuck at 
+        ±129° (their limits) and couldn't recover. The posture task gently 
+        pulls joints toward their default (neutral) positions, keeping them
+        away from limits while still allowing tracking.
+        
+        Uses per-joint costs:
+        - Shoulder/elbow: low cost (0.02) - allow tracking but prevent limits
+        - Wrist joints: higher cost (0.1) - keep neutral (not tracked)
+        - Leg joints: high cost (0.05) - keep stable (not tracked)
+        - Waist/root: medium cost (0.01) - keep upright
+        """
+        # Per-DOF costs (length = nv = 35 for this robot)
+        # nv uses 3 DOFs for orientation (not 4 like quaternion in qpos)
+        # DOF layout: [x, y, z, rx, ry, rz, joint1, joint2, ...]
+        # Joints 6+: 0-5=left_leg, 6-11=right_leg, 12-14=waist, 15-21=left_arm, 22-28=right_arm
+        costs = np.ones(self.model.nv) * 0.01  # Default cost
+        
+        # Root position/orientation (DOFs 0-5): low cost (base is frozen anyway)
+        costs[0:6] = 0.001
+        
+        # Leg joints (DOFs 6-17): higher cost to keep stable
+        costs[6:18] = 0.05
+        
+        # Waist joints (DOFs 18-20): higher cost to keep facing forward
+        costs[18:21] = 0.05
+        
+        # Arm joints breakdown (each arm has 7 DOFs):
+        # Left arm DOFs 21-27: shoulder_pitch, shoulder_roll, shoulder_yaw, elbow, wrist_roll, wrist_pitch, wrist_yaw
+        # Right arm DOFs 28-34: same pattern
+        
+        # Shoulder and elbow (DOFs 21-24 left, 28-31 right): moderate cost
+        # Provides resistance to prevent hitting joint limits
+        costs[21:25] = 0.05  # Left shoulder/elbow
+        costs[28:32] = 0.05  # Right shoulder/elbow
+        
+        # Wrist joints (DOFs 25-27 left, 32-34 right): higher cost
+        # We're not tracking wrist orientation, so keep them near neutral
+        costs[25:28] = 0.1   # Left wrist
+        costs[32:35] = 0.1   # Right wrist
+        
+        self.posture_task = mink.PostureTask(model=self.model, cost=costs)
+        
+        # Default standing pose as target
+        default_qpos = np.zeros(self.model.nq)
+        default_qpos[2] = 0.75  # Standing height
+        default_qpos[3] = 1.0   # Quaternion w (upright)
+        self.posture_task.set_target(default_qpos)
+    
+    def _setup_waist_constraints(self):
+        """
+        Setup waist joint indices for clamping during IK.
+        
+        The waist roll/pitch are clamped to keep the torso upright:
+        - waist_roll: ±5° (prevents leaning side to side)
+        - waist_pitch: ±5° (prevents leaning forward/back)
+        
+        waist_yaw is NOT clamped - it's controlled by posture regularization
+        so it can move freely but gently returns to center. This allows
+        future use for whole-body teleop.
+        """
         self.waist_joint_indices = {}
+        # Only clamp roll and pitch - yaw is free to move
         for joint_name in ['waist_roll_joint', 'waist_pitch_joint']:
             joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
             if joint_id >= 0:
                 self.waist_joint_indices[joint_name] = self.model.jnt_qposadr[joint_id]
+    
+    def _setup_base_freezing(self):
+        """
+        Setup constraint to freeze the floating base DOFs during IK.
         
-        self.all_tasks = list(self.tasks.values())
+        KEY INSIGHT: Without this, the IK solver "cheats" by moving the pelvis
+        (root body) to reach targets instead of using the arm joints properly.
+        This causes:
+        - Z position jumping around when moving arms
+        - Cross-arm coupling (moving one arm affects the other via pelvis motion)
+        - General instability
+        
+        The floating base has 6 DOFs in velocity space:
+        - DOFs 0-2: Linear velocity (x, y, z)
+        - DOFs 3-5: Angular velocity (roll, pitch, yaw)
+        
+        We freeze all 6 to force the IK to only use joint angles.
+        """
+        # Freeze all 6 floating base DOFs
+        base_dof_indices = [0, 1, 2, 3, 4, 5]
+        self.base_freezing_constraint = DofFreezingTask(
+            model=self.model,
+            dof_indices=base_dof_indices,
+            gain=1.0,  # Strict enforcement
+        )
+        
+        if self.verbose:
+            print(f"[IK] Base freezing constraint: DOFs {base_dof_indices}")
     
     def reset_to_default(self):
         """Reset robot to default standing pose."""
@@ -650,7 +804,7 @@ class EndEffectorIKRetargeter:
             human_pos_rel = ee_info['position'].copy()
             
             # Choose scale based on limb type
-            if 'hand' in ee_name:
+            if 'hand' in ee_name or 'elbow' in ee_name:
                 scale = arm_scale
             elif 'foot' in ee_name:
                 scale = leg_scale
@@ -683,8 +837,12 @@ class EndEffectorIKRetargeter:
         dt = self.model.opt.timestep
         prev_error = self._compute_error()
         
-        # Max allowed waist tilt in radians (about 5 degrees)
-        max_waist_tilt = np.radians(5.0)
+        # Waist joint limits to keep torso upright (yaw is free, controlled by posture)
+        max_waist_tilt = np.radians(5.0)  # ±5° for roll and pitch
+        
+        # Use base freezing constraint when fixed_base=True (arm-only teleop)
+        # For whole-body teleop, set fixed_base=False to allow pelvis movement
+        ik_constraints = [self.base_freezing_constraint] if fixed_base else None
         
         for i in range(self.max_iterations):
             vel = mink.solve_ik(
@@ -692,8 +850,9 @@ class EndEffectorIKRetargeter:
                 self.all_tasks,
                 dt,
                 self.solver,
-                self.damping,
-                self.ik_limits,
+                damping=self.damping,
+                limits=self.ik_limits,
+                constraints=ik_constraints,
             )
             self.configuration.integrate_inplace(vel, dt)
             
@@ -720,6 +879,19 @@ class EndEffectorIKRetargeter:
         
         # Extract joint angles
         qpos = self.configuration.data.qpos.copy()
+        
+        # Fix root X/Y to 0 (we don't want base drift during standing teleop)
+        qpos[0] = 0.0  # X position
+        qpos[1] = 0.0  # Y position
+        # qpos[2] is Z height - enforce fixed height if fixed_base was requested
+        if fixed_base:
+            qpos[2] = 0.75  # Fixed standing height
+        # qpos[3:7] is quaternion - keep base orientation upright
+        qpos[3] = 1.0  # w
+        qpos[4] = 0.0  # x
+        qpos[5] = 0.0  # y
+        qpos[6] = 0.0  # z
+        
         joint_angles_rad = {}
         for idx, joint_name in enumerate(JOINT_ORDER):
             joint_angles_rad[joint_name] = qpos[7 + idx]

@@ -36,6 +36,14 @@ except ImportError:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Import smoothing filter
+try:
+    from smoothing_filters import OneEuroFilter
+    HAS_SMOOTHING = True
+except ImportError:
+    HAS_SMOOTHING = False
+    logger.warning("smoothing_filters not available - skeleton smoothing disabled")
+
 
 # =============================================================================
 # Triangulation (from FreeMoCap/anipose)
@@ -263,6 +271,19 @@ class MultiCameraCapture:
             
             frames = {k: v.copy() for k, v in self.frames.items()}
             return frames, avg_timestamp, time_spread
+    
+    def get_all_frames(self) -> Dict[int, np.ndarray]:
+        """
+        Get latest frames from all cameras without sync filtering.
+        Use this for display purposes where sync timing doesn't matter.
+        
+        Returns:
+            Dictionary of camera_id -> frame
+        """
+        with self.frame_lock:
+            if not self.frames:
+                return {}
+            return {k: v.copy() for k, v in self.frames.items()}
     
     def stop(self):
         """Stop all capture threads."""
@@ -510,7 +531,11 @@ class MultiCamPoseStreamer:
         resolution: Tuple[int, int] = (1280, 720),
         enable_hands: bool = True,
         enable_display: bool = False,
-        target_fps: int = 30
+        target_fps: int = 30,
+        use_gmr: bool = False,
+        skeleton_smoothing: str = "none",
+        smoothing_min_cutoff: float = 1.0,
+        smoothing_beta: float = 0.007,
     ):
         """
         Initialize multi-camera pose streamer.
@@ -522,6 +547,10 @@ class MultiCamPoseStreamer:
             enable_hands: Whether to track hands
             enable_display: Show visualization window
             target_fps: Target frame rate
+            use_gmr: Use GMR IK-based retargeting instead of direct mapping
+            skeleton_smoothing: Smoothing method - "none", "one_euro"
+            smoothing_min_cutoff: One Euro min_cutoff parameter (lower = smoother)
+            smoothing_beta: One Euro beta parameter (higher = more responsive to speed)
         """
         if not MEDIAPIPE_AVAILABLE:
             raise ImportError("MediaPipe required. Install with: pip install mediapipe")
@@ -531,6 +560,7 @@ class MultiCamPoseStreamer:
         self.enable_hands = enable_hands
         self.enable_display = enable_display
         self.target_fps = target_fps
+        self.use_gmr = use_gmr
         
         # Load calibration
         self.calibrations = load_calibration(calibration_file)
@@ -547,13 +577,30 @@ class MultiCamPoseStreamer:
         
         # State
         self.latest_3d_skeleton: Optional[np.ndarray] = None
+        self._prev_skeleton: Optional[np.ndarray] = None  # For outlier rejection
         self.latest_hands_3d: Dict[str, Optional[np.ndarray]] = {
             'left': None, 'right': None
         }
         self.latest_reprojection_error: float = 0.0
         self.latest_frames: Dict[int, np.ndarray] = {}
         self.latest_detections: Dict[int, dict] = {}
+        self._latest_display_frame: Optional[np.ndarray] = None  # Pre-rendered display frame
         self.data_lock = Lock()
+        
+        # Skeleton smoothing
+        self.skeleton_smoothing = skeleton_smoothing
+        self.skeleton_filter: Optional['OneEuroFilter'] = None
+        if skeleton_smoothing == "one_euro" and HAS_SMOOTHING:
+            # 33 landmarks * 3 coordinates = 99 dimensions
+            self.skeleton_filter = OneEuroFilter(
+                min_cutoff=smoothing_min_cutoff,
+                beta=smoothing_beta,
+                num_dims=99,
+            )
+            logger.info(f"Skeleton smoothing enabled: {skeleton_smoothing} "
+                       f"(min_cutoff={smoothing_min_cutoff}, beta={smoothing_beta})")
+        elif skeleton_smoothing != "none":
+            logger.warning(f"Unknown smoothing method '{skeleton_smoothing}' or smoothing not available")
         
         # Processing thread
         self.is_running = False
@@ -594,27 +641,49 @@ class MultiCamPoseStreamer:
         while self.is_running:
             start_time = time.time()
             
-            # Get synchronized frames
-            frames, timestamp, time_spread = self.capture.get_synchronized_frames()
+            # Get ALL frames for display (no sync filtering - prevents flashing)
+            all_frames = self.capture.get_all_frames()
             
-            if len(frames) < 2:
+            if not all_frames:
                 time.sleep(0.01)
                 continue
+            
+            # Get synchronized frames for triangulation (with sync filtering for accuracy)
+            synced_frames, timestamp, time_spread = self.capture.get_synchronized_frames()
             
             # Store sync quality for display
             self._last_time_spread = time_spread
             
-            # Run MediaPipe detection on each camera
-            detections = {}
-            for cam_id, frame in frames.items():
+            # Run MediaPipe detection on ALL frames (for display)
+            all_detections = {}
+            for cam_id, frame in all_frames.items():
                 if cam_id in self.detectors:
-                    detections[cam_id] = self.detectors[cam_id].detect(frame)
+                    all_detections[cam_id] = self.detectors[cam_id].detect(frame)
             
-            # Collect 2D pose landmarks from all cameras
+            # Always pre-render display frame using ALL cameras
+            display_frame = self._render_display_frame(all_frames, all_detections, mp_drawing, mp_holistic, mp_drawing_styles)
+            if display_frame is not None:
+                with self.data_lock:
+                    self._latest_display_frame = display_frame
+                    # Store raw frames for external access (e.g., video recording)
+                    self.latest_frames = {cam_id: frame.copy() for cam_id, frame in all_frames.items()}
+                    self.latest_detections = dict(all_detections)
+            
+            # Need at least 2 synced cameras for triangulation
+            if len(synced_frames) < 2:
+                time.sleep(0.01)
+                continue
+            
+            # Use detections from synced frames for triangulation (filter from all_detections)
+            synced_detections = {cam_id: all_detections[cam_id] 
+                                 for cam_id in synced_frames.keys() 
+                                 if cam_id in all_detections}
+            
+            # Collect 2D pose landmarks from synced cameras only
             landmarks_2d = {}
             visibility = {}
             
-            for cam_id, det in detections.items():
+            for cam_id, det in synced_detections.items():
                 if det['pose'] is not None:
                     # Convert normalized to pixel coordinates
                     pose_normalized = det['pose']
@@ -634,19 +703,36 @@ class MultiCamPoseStreamer:
                 
                 avg_error = np.nanmean(reproj_errors) if len(reproj_errors) > 0 else 0.0
                 
+                # Apply skeleton smoothing if enabled
+                if self.skeleton_filter is not None and skeleton_3d is not None:
+                    # Only smooth valid (non-NaN) values
+                    valid_mask = ~np.isnan(skeleton_3d).any(axis=1)
+                    if valid_mask.sum() > 0:
+                        # Flatten for filtering, then reshape
+                        skeleton_flat = skeleton_3d.flatten()
+                        # Replace NaN with 0 for filtering (will be restored after)
+                        nan_mask = np.isnan(skeleton_flat)
+                        skeleton_flat[nan_mask] = 0.0
+                        
+                        smoothed_flat = self.skeleton_filter.filter(skeleton_flat, timestamp)
+                        skeleton_3d = smoothed_flat.reshape(33, 3)
+                        
+                        # Restore NaN values for invalid landmarks
+                        for i in range(33):
+                            if not valid_mask[i]:
+                                skeleton_3d[i] = np.nan
+                
                 with self.data_lock:
                     self.latest_3d_skeleton = skeleton_3d
                     self.latest_reprojection_error = avg_error
-                    self.latest_frames = frames
-                    self.latest_detections = detections
                 
                 # Triangulate hands if enabled
                 if self.enable_hands:
-                    self._triangulate_hands(detections)
+                    self._triangulate_hands(synced_detections)
             
-            # Display if enabled
+            # Display if enabled (use all frames, not just synced)
             if self.enable_display:
-                self._display_results(frames, detections, mp_drawing, mp_holistic, mp_drawing_styles)
+                self._display_results(all_frames, all_detections, mp_drawing, mp_holistic, mp_drawing_styles)
             
             # Update FPS
             self.frame_count += 1
@@ -755,6 +841,81 @@ class MultiCamPoseStreamer:
         if cv2.waitKey(1) & 0xFF == ord('q'):
             self.is_running = False
     
+    def _render_display_frame(self, frames, detections, mp_drawing, mp_holistic, mp_drawing_styles) -> Optional[np.ndarray]:
+        """Render display frame for external use (called from processing thread)."""
+        if not frames:
+            return None
+        
+        # Fixed output size to prevent window resizing/flashing
+        # Layout: 2 columns, up to 2 rows (for up to 4 cameras)
+        CELL_W, CELL_H = 640, 360
+        OUTPUT_W, OUTPUT_H = CELL_W * 2, CELL_H * 2  # 1280 x 720
+        
+        # Create fixed-size black canvas
+        combined = np.zeros((OUTPUT_H, OUTPUT_W, 3), dtype=np.uint8)
+        
+        # Process each camera and place in grid
+        sorted_cam_ids = sorted(frames.keys())
+        
+        for idx, cam_id in enumerate(sorted_cam_ids):
+            if idx >= 4:  # Max 4 cameras in 2x2 grid
+                break
+                
+            frame = frames[cam_id].copy()
+            
+            if cam_id in detections:
+                det = detections[cam_id]
+                results = det.get('raw_results')
+                
+                if results and results.pose_landmarks:
+                    mp_drawing.draw_landmarks(
+                        frame, results.pose_landmarks,
+                        mp_holistic.POSE_CONNECTIONS,
+                        landmark_drawing_spec=mp_drawing_styles.get_default_pose_landmarks_style()
+                    )
+                
+                if self.enable_hands and results:
+                    if results.left_hand_landmarks:
+                        mp_drawing.draw_landmarks(
+                            frame, results.left_hand_landmarks,
+                            mp_holistic.HAND_CONNECTIONS
+                        )
+                    if results.right_hand_landmarks:
+                        mp_drawing.draw_landmarks(
+                            frame, results.right_hand_landmarks,
+                            mp_holistic.HAND_CONNECTIONS
+                        )
+            
+            # Add camera label and FPS
+            cv2.putText(frame, f"Cam {cam_id}", (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.putText(frame, f"FPS: {self.current_fps:.1f}", (10, 60),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            
+            # Show reprojection error (don't lock here, we're in processing thread)
+            error = self.latest_reprojection_error
+            error_color = (0, 255, 0) if error < 10 else (0, 255, 255) if error < 20 else (0, 0, 255)
+            cv2.putText(frame, f"Reproj: {error:.1f}px", (10, 85),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, error_color, 1)
+            
+            # Show sync status
+            sync_ms = self._last_time_spread * 1000
+            sync_color = (0, 255, 0) if sync_ms < 30 else (0, 255, 255) if sync_ms < 50 else (0, 0, 255)
+            cv2.putText(frame, f"Sync: {sync_ms:.0f}ms", (10, 110),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, sync_color, 1)
+            
+            # Resize to fit cell
+            resized = cv2.resize(frame, (CELL_W, CELL_H))
+            
+            # Place in grid (row 0: cameras 0,1; row 1: cameras 2,3)
+            row = idx // 2
+            col = idx % 2
+            y_start = row * CELL_H
+            x_start = col * CELL_W
+            combined[y_start:y_start+CELL_H, x_start:x_start+CELL_W] = resized
+        
+        return combined
+    
     def get_3d_skeleton(self) -> Tuple[Optional[np.ndarray], float]:
         """
         Get the current 3D skeleton.
@@ -778,6 +939,34 @@ class MultiCamPoseStreamer:
             left = self.latest_hands_3d['left'].copy() if self.latest_hands_3d['left'] is not None else None
             right = self.latest_hands_3d['right'].copy() if self.latest_hands_3d['right'] is not None else None
         return left, right
+    
+    def get_latest_frames(self) -> Tuple[Dict[int, np.ndarray], Dict[int, dict]]:
+        """
+        Get the latest camera frames and detections for external display.
+        
+        Returns:
+            (frames, detections): Dictionaries keyed by camera_id
+        """
+        with self.data_lock:
+            # Data is already copied in the processing loop, just copy the references
+            frames = dict(self.latest_frames) if self.latest_frames else {}
+            detections = dict(self.latest_detections) if self.latest_detections else {}
+        return frames, detections
+    
+    def get_display_frame(self) -> Optional[np.ndarray]:
+        """
+        Get a combined visualization frame for external display.
+        
+        The frame is pre-rendered by the processing thread to avoid threading
+        issues with MediaPipe objects.
+        
+        Returns:
+            Combined BGR image with all camera views and pose overlays, or None
+        """
+        with self.data_lock:
+            if self._latest_display_frame is not None:
+                return self._latest_display_frame.copy()
+            return None
     
     def _fill_missing_landmarks(self, skeleton: np.ndarray) -> np.ndarray:
         """
@@ -911,17 +1100,20 @@ class MultiCamPoseStreamer:
         # The caller (multicam_to_twist2.py) will handle the conversion
         return (skeleton_3d, left_hand, right_hand, None, None)
     
-    def get_mimic_obs(self) -> Optional[np.ndarray]:
+    def get_mimic_obs(self, use_gmr: bool = None) -> Optional[np.ndarray]:
         """
         Get current skeleton as mimic_obs directly (bypassing SMPL-X).
+        
+        Args:
+            use_gmr: If True, use GMR IK-based retargeting. If False, use direct mapping.
+                     If None, uses the instance default (self.use_gmr).
         
         Returns:
             mimic_obs: (35,) array for robot control, or None if invalid
         """
-        from mediapipe_to_g1_direct import MediaPipeToG1Direct
-        
-        if not hasattr(self, '_g1_converter'):
-            self._g1_converter = MediaPipeToG1Direct(robot_height=0.8)
+        # Use instance default if not specified
+        if use_gmr is None:
+            use_gmr = self.use_gmr
         
         skeleton_3d, reproj_error = self.get_3d_skeleton()
         
@@ -940,16 +1132,36 @@ class MultiCamPoseStreamer:
         # Get hand landmarks for wrist control
         left_hand, right_hand = self.get_3d_hands()
         
-        # Direct conversion to mimic_obs (with hand data for wrist control)
+        # Choose converter based on mode
+        if use_gmr:
+            # GMR IK-based retargeting
+            if not hasattr(self, '_gmr_converter'):
+                from mediapipe_to_g1_gmr import MediaPipeToG1GMR
+                self._gmr_converter = MediaPipeToG1GMR(
+                    tpose_calibration_path='../calibration/tpose_calibration.json',
+                    human_height=1.7,
+                    robot_height=0.8,
+                    arms_only=True,
+                    use_gmr_ik=True
+                )
+            converter = self._gmr_converter
+        else:
+            # Direct mapping (original method)
+            if not hasattr(self, '_direct_converter'):
+                from mediapipe_to_g1_direct import MediaPipeToG1Direct
+                self._direct_converter = MediaPipeToG1Direct(robot_height=0.8)
+            converter = self._direct_converter
+        
+        # Convert to mimic_obs
         try:
-            mimic_obs = self._g1_converter.skeleton_to_mimic_obs(
+            mimic_obs = converter.skeleton_to_mimic_obs(
                 skeleton_3d, 
                 left_hand=left_hand, 
                 right_hand=right_hand
             )
             return mimic_obs
         except Exception as e:
-            logger.debug(f"Direct G1 conversion failed: {e}")
+            logger.debug(f"G1 conversion failed: {e}")
             return None
     
     def stop(self):
