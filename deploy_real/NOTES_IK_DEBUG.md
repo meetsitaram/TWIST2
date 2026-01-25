@@ -714,3 +714,117 @@ TWIST2/
     ├── teleop_jitter_analysis.py  # Analysis
     └── teleop_episode_recorder.py # Core API
 ```
+
+## Next Steps - Whole Body Teleop Pipeline (Jan 24, 2026 - Evening Planning)
+
+### Overview
+
+Goal: Mobile teleop (walking + upper body) with crouching/sitting support.
+Approach: Record IK-based episodes → Train with RL (TWIST2/legged_gym style).
+
+Key insight: The RL policy learns to track recorded motions stably—it's not learning 
+from reward signals about hand tracking error, it's mimicking the IK solution. This means:
+- IK doesn't need to be perfect, just physically plausible
+- Robot won't fall if IK looks stable in recording
+- Lower body can be approximate—RL figures out stable execution
+
+### Step 1: Two-Stage IK (Decouple Upper/Lower Body)
+
+**Rationale**: Optimizing lower body could regress upper body quality. Different 
+constraint regimes (arms don't care about ground contact; legs do).
+
+**Stage 1: Upper Body IK (fixed_base=True)**
+```
+Input: Human skeleton (scaled)
+Targets: Left/right wrist + elbow hints
+Constraints: Pelvis frozen at (0, 0, Z_fixed)
+Output: Arm joint angles (14 DOFs: shoulders + elbows + wrists)
+Waist: Constrained pitch/roll to ±5°, yaw free
+```
+
+**Stage 2: Lower Body IK (base Z and rotation free)**
+```
+Input: Human skeleton (scaled) + Stage 1 arm angles
+Targets: Left/right ankle positions
+Variables: 
+  - Leg joints (12 DOFs)
+  - Pelvis Z (height only, XY frozen)
+  - Pelvis yaw (optional, if human rotates)
+Constraints:
+  - Arm joints: FROZEN to Stage 1 values (DofFreezingTask)
+  - Foot Z clamped near ground
+Output: Full 29-DOF pose + pelvis height
+```
+
+**Implementation**: `end_effector_ik_retarget.py` → add `retarget_two_stage()` method
+
+### Step 2: Episode → Motion Converter
+
+Convert teleop episode NPZ files to TWIST2 motion pickle format:
+
+```python
+# Input: datasets/teleop_episodes/episode_name/episode_name.npz
+data['robot_qpos']  # (N, 36) = [x, y, z, qw, qx, qy, qz, joints_29...]
+
+# Output: motion_data/*.pkl (TWIST2 format)
+motion_data = {
+    'root_pos': robot_qpos[:, 0:3],           # (N, 3)
+    'root_rot': robot_qpos[:, 3:7],           # (N, 4) quaternion
+    'dof_pos': robot_qpos[:, 7:36],           # (N, 29)
+    'local_body_pos': compute_fk_body_pos(),  # (N, num_bodies, 3) 
+    'fps': 30,
+    'link_body_list': ['pelvis', 'left_hip_pitch_link', ...]
+}
+```
+
+**Implementation**: Create `convert_episodes_to_motion.py`
+
+### Step 3: Motion Config YAML
+
+Create YAML config pointing to recorded dataset:
+
+```yaml
+# motion_data_configs/teleop_dataset.yaml
+root_path: /path/to/motion_data/
+motions:
+  - file: episode_001.pkl
+    weight: 1.0
+  - file: episode_002.pkl
+    weight: 1.0
+```
+
+### Step 4: Train with legged_gym
+
+Use TWIST2's motion imitation training:
+- `g1_mimic_distill_config.py` as base config
+- Point `motion_file` to teleop dataset YAML
+- Key rewards: `tracking_joint_dof`, `tracking_keybody_pos`, `tracking_root_translation_z`
+- Domain randomization for sim-to-real
+
+### Key TWIST2 Training Concepts
+
+**Motion Library** (`pose/utils/motion_lib_pkl.py`):
+- Loads pickle files with root_pos, root_rot, dof_pos, local_body_pos
+- Computes velocities via gradient
+- Supports motion curriculum (harder motions sampled more)
+
+**Mimic Environment** (`legged_gym/envs/base/humanoid_mimic.py`):
+- Reference State Initialization (RSI): Reset robot to random point in motion
+- Tracks reference motion frame-by-frame
+- Rewards for matching joint positions, key body positions, root pose
+
+**Reward Structure** (from `g1_mimic_distill_config.py`):
+- `tracking_joint_dof`: 2.0 (match joint angles)
+- `tracking_keybody_pos`: 2.0 (match hands/feet/elbows/knees/head)
+- `tracking_root_translation_z`: 1.0 (match pelvis height)
+- `tracking_root_rotation`: 1.0 (match root orientation)
+- Penalties: feet_slip, dof_pos_limits, action_rate, etc.
+
+### Files to Create/Modify
+
+| File | Purpose |
+|------|---------|
+| `end_effector_ik_retarget.py` | Add `retarget_two_stage()` method |
+| `convert_episodes_to_motion.py` | NPZ → pickle converter (new) |
+| `motion_data_configs/teleop_dataset.yaml` | Training config (new) |
+| `stream_ik_teleop.py` | Use two-stage IK for recording |
