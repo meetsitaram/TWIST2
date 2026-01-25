@@ -4,18 +4,25 @@ Live IK Teleoperation - Stream human pose to robot using End-Effector IK.
 
 Real-time teleoperation using:
 - Multi-camera 3D skeleton capture (MediaPipe + triangulation)
-- End-effector IK retargeting (hands and feet)
+- End-effector IK retargeting (hands, elbows, and optionally feet)
 - MuJoCo passive viewer (kinematics only, no physics)
+
+IK Modes:
+- Single-stage (default): Upper body only, fixed base at Z=0.75m
+- Two-stage (--two-stage): Whole body - upper body first, then lower body
 
 Usage:
     cd ~/projects/g1-pick-n-place/TWIST2/deploy_real
     conda activate gmr
     
-    # Live teleoperation
+    # Live teleoperation (upper body only)
     python stream_ik_teleop.py
     
-    # Record an episode
-    python stream_ik_teleop.py --record --name baseline_001 --duration 30
+    # Live teleoperation (whole body with two-stage IK)
+    python stream_ik_teleop.py --two-stage
+    
+    # Record an episode with two-stage IK
+    python stream_ik_teleop.py --record --name wholebody_001 --duration 30 --two-stage
     
     # List recorded episodes
     python stream_ik_teleop.py --list-episodes
@@ -72,10 +79,12 @@ class IKTeleopStreamer:
         skeleton_smoothing: str = "none",
         smoothing_min_cutoff: float = 1.0,
         smoothing_beta: float = 0.007,
+        two_stage: bool = False,
     ):
         self.target_fps = target_fps
         self.verbose = verbose
         self.running = False
+        self.two_stage = two_stage
         
         # Recording setup
         self.record = record
@@ -115,7 +124,8 @@ class IKTeleopStreamer:
         )
         
         # Initialize IK retargeter
-        print(f"[IK Teleop] Initializing IK retargeter...")
+        mode_str = "two-stage (whole body)" if two_stage else "single-stage (upper body)"
+        print(f"[IK Teleop] Initializing IK retargeter ({mode_str})...")
         self.retargeter = EndEffectorIKRetargeter(
             verbose=False,
             max_iterations=30,  # Fewer iterations for real-time
@@ -215,8 +225,9 @@ class IKTeleopStreamer:
     def _wait_for_start(self, viewer):
         """Wait for ENTER key press in terminal, then countdown before starting."""
         
+        mode_str = "TWO-STAGE (WHOLE BODY)" if self.two_stage else "SINGLE-STAGE (UPPER BODY)"
         print("\n" + "="*60)
-        print("IK TELEOPERATION - KINEMATICS MODE")
+        print(f"IK TELEOPERATION - {mode_str}")
         print("="*60)
         print("Controls:")
         print("  - Press ENTER in terminal to start (10s countdown)")
@@ -308,14 +319,21 @@ class IKTeleopStreamer:
                         # Keep prev_qpos as-is - next valid IK result will establish new baseline
                     
                     # Run IK retargeting
-                    # fixed_base=True keeps pelvis at constant height (0.75m)
-                    # This is needed because foot tracking is disabled, so pelvis
-                    # height from skeleton is noisy and causes Z to jump around
-                    result = self.retargeter.retarget(
-                        skeleton_3d, 
-                        reset_to_default=should_recover,
-                        fixed_base=True,  # Fixed pelvis height (arm-only tracking)
-                    )
+                    if self.two_stage:
+                        # Two-stage IK: upper body first, then lower body
+                        # Pelvis Z is derived from foot positions
+                        result = self.retargeter.retarget_two_stage(
+                            skeleton_3d, 
+                            reset_to_default=should_recover,
+                        )
+                    else:
+                        # Single-stage: upper body only with fixed base
+                        # fixed_base=True keeps pelvis at constant height (0.75m)
+                        result = self.retargeter.retarget(
+                            skeleton_3d, 
+                            reset_to_default=should_recover,
+                            fixed_base=True,  # Fixed pelvis height (arm-only tracking)
+                        )
                     
                     if result.get('valid', False):
                         ik_error = result['error']
@@ -573,11 +591,17 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    # Live teleoperation
+    # Live teleoperation (upper body only)
     python stream_ik_teleop.py
     
-    # Record an episode
+    # Live teleoperation (whole body with two-stage IK)
+    python stream_ik_teleop.py --two-stage
+    
+    # Record an episode (upper body)
     python stream_ik_teleop.py --record --name baseline_001 --duration 30
+    
+    # Record with two-stage IK (whole body)
+    python stream_ik_teleop.py --record --name wholebody_001 --duration 30 --two-stage
     
     # Record with video
     python stream_ik_teleop.py --record --name baseline_001 --video
@@ -635,6 +659,10 @@ Examples:
     parser.add_argument("--smooth-beta", type=float, default=0.007,
                        help="One Euro beta - higher = more responsive (default: 0.007)")
     
+    # IK mode options
+    parser.add_argument("--two-stage", "-2", action="store_true",
+                       help="Use two-stage IK (whole body: upper body first, then lower body)")
+    
     args = parser.parse_args()
     
     # Handle list-episodes
@@ -677,6 +705,7 @@ Examples:
         skeleton_smoothing=args.smoothing,
         smoothing_min_cutoff=args.smooth_cutoff,
         smoothing_beta=args.smooth_beta,
+        two_stage=args.two_stage,
     )
     
     streamer.run()

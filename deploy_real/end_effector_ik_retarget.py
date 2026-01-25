@@ -9,18 +9,27 @@ Instead of matching all 14 body parts (like GMR), this simpler approach:
 
 End-effectors tracked:
 - Left/Right Hand: wrist position + palm orientation
-- Left/Right Foot: ankle position + foot orientation
+- Left/Right Foot: ankle position + foot orientation (two-stage mode)
 - Torso: mid-shoulder position + torso orientation
 
+IK Modes:
+- Single-stage (default): Upper body only, fixed base at Z=0.75m
+- Two-stage (--two-stage): 
+  1. Stage 1: Upper body with fixed base
+  2. Stage 2: Lower body with arms frozen, base Z free
+
 Usage:
-    # Test with a captured pose
+    # Test with a captured pose (single-stage, upper body only)
     python end_effector_ik_retarget.py --pose 1_20260123_162606
     
-    # Test all captured poses
-    python end_effector_ik_retarget.py --all
+    # Test with two-stage IK (whole body)
+    python end_effector_ik_retarget.py --pose 1_20260123_162606 --two-stage
+    
+    # Test all captured poses with two-stage IK
+    python end_effector_ik_retarget.py --all --two-stage
     
     # Visualize in MuJoCo
-    python end_effector_ik_retarget.py --pose 1_20260123_162606 --viz
+    python end_effector_ik_retarget.py --pose 1_20260123_162606 --viz --two-stage
     
     # Side-by-side comparison (human vs robot with end-effectors and orientations)
     python end_effector_ik_retarget.py --pose 1_20260123_162606 --compare
@@ -81,16 +90,24 @@ MP_LEFT_FOOT_INDEX = 31
 MP_RIGHT_FOOT_INDEX = 32
 
 # Robot body names for each end-effector
-# NOTE: Foot tracking disabled - causes legs to float/be unstable
-#       Tracking hands + elbows for better arm poses
-ROBOT_EE_BODIES = {
+# Upper body targets (used in Stage 1 of two-stage IK)
+ROBOT_EE_BODIES_UPPER = {
     'left_hand': 'left_wrist_yaw_link',
     'right_hand': 'right_wrist_yaw_link',
-    'left_elbow': 'left_elbow_link',      # Added for better arm tracking
-    'right_elbow': 'right_elbow_link',    # Added for better arm tracking
-    # 'left_foot': 'left_ankle_roll_link',   # Disabled - causes floating legs
-    # 'right_foot': 'right_ankle_roll_link', # Disabled - causes floating legs
+    'left_elbow': 'left_elbow_link',
+    'right_elbow': 'right_elbow_link',
 }
+
+# Lower body targets (used in Stage 2 of two-stage IK)
+ROBOT_EE_BODIES_LOWER = {
+    'left_foot': 'left_ankle_roll_link',
+    'right_foot': 'right_ankle_roll_link',
+    'left_knee': 'left_knee_link',      # Soft hint for leg pose
+    'right_knee': 'right_knee_link',    # Soft hint for leg pose
+}
+
+# Combined for backward compatibility (upper body only by default)
+ROBOT_EE_BODIES = ROBOT_EE_BODIES_UPPER.copy()
 
 # Separate orientation-only constraint for torso (no position, just keep upright)
 ROBOT_TORSO_BODY = 'waist_roll_link'  # Use waist for orientation constraint
@@ -390,6 +407,24 @@ def extract_human_end_effectors(skeleton_3d: np.ndarray) -> dict:
         'axes': {'forward': r_foot_forward, 'up': r_foot_up, 'right': r_foot_right}
     }
     
+    # === LEFT KNEE (soft hint for leg pose) ===
+    l_knee = skeleton[MP_LEFT_KNEE]
+    end_effectors['left_knee'] = {
+        'position': l_knee - pelvis,
+        'orientation': np.array([1.0, 0.0, 0.0, 0.0]),  # Identity
+        'R_mat': np.eye(3),
+        'axes': None
+    }
+    
+    # === RIGHT KNEE (soft hint for leg pose) ===
+    r_knee = skeleton[MP_RIGHT_KNEE]
+    end_effectors['right_knee'] = {
+        'position': r_knee - pelvis,
+        'orientation': np.array([1.0, 0.0, 0.0, 0.0]),  # Identity
+        'R_mat': np.eye(3),
+        'axes': None
+    }
+    
     # === TORSO (mid-shoulder with chest facing direction) ===
     l_shoulder = skeleton[MP_LEFT_SHOULDER]
     r_shoulder = skeleton[MP_RIGHT_SHOULDER]
@@ -623,14 +658,36 @@ class EndEffectorIKRetargeter:
         # Per-DOF costs (length = nv = 35 for this robot)
         # nv uses 3 DOFs for orientation (not 4 like quaternion in qpos)
         # DOF layout: [x, y, z, rx, ry, rz, joint1, joint2, ...]
-        # Joints 6+: 0-5=left_leg, 6-11=right_leg, 12-14=waist, 15-21=left_arm, 22-28=right_arm
+        # Leg DOFs breakdown:
+        #   DOF 6 = left_hip_pitch, 7 = left_hip_roll, 8 = left_hip_yaw
+        #   DOF 9 = left_knee
+        #   DOF 10 = left_ankle_pitch, 11 = left_ankle_roll
+        #   DOF 12 = right_hip_pitch, 13 = right_hip_roll, 14 = right_hip_yaw
+        #   DOF 15 = right_knee
+        #   DOF 16 = right_ankle_pitch, 17 = right_ankle_roll
         costs = np.ones(self.model.nv) * 0.01  # Default cost
         
         # Root position/orientation (DOFs 0-5): low cost (base is frozen anyway)
         costs[0:6] = 0.001
         
-        # Leg joints (DOFs 6-17): higher cost to keep stable
-        costs[6:18] = 0.05
+        # Leg joints - different costs for different functions:
+        # Hip roll/yaw: higher cost (keep legs from splaying)
+        costs[7] = 0.05   # left_hip_roll
+        costs[8] = 0.05   # left_hip_yaw
+        costs[13] = 0.05  # right_hip_roll
+        costs[14] = 0.05  # right_hip_yaw
+        
+        # Hip pitch and knee: LOW cost (allow crouching/bending)
+        costs[6] = 0.01   # left_hip_pitch - needed for crouching
+        costs[9] = 0.01   # left_knee - needed for crouching
+        costs[12] = 0.01  # right_hip_pitch - needed for crouching
+        costs[15] = 0.01  # right_knee - needed for crouching
+        
+        # Ankles: medium cost (keep feet stable but allow some flex)
+        costs[10] = 0.03  # left_ankle_pitch
+        costs[11] = 0.05  # left_ankle_roll
+        costs[16] = 0.03  # right_ankle_pitch
+        costs[17] = 0.05  # right_ankle_roll
         
         # Waist joints (DOFs 18-20): higher cost to keep facing forward
         costs[18:21] = 0.05
@@ -912,6 +969,338 @@ class EndEffectorIKRetargeter:
         errors = [task.compute_error(self.configuration) for task in self.all_tasks]
         return np.linalg.norm(np.concatenate(errors))
     
+    def retarget_two_stage(
+        self,
+        skeleton_3d: np.ndarray,
+        human_height: float = None,
+        reset_to_default: bool = True,
+    ) -> dict:
+        """
+        Two-stage IK retargeting for whole-body teleop.
+        
+        Stage 1: Upper body IK with fixed base
+          - Solves for arm joints (shoulders, elbows, wrists)
+          - Base (pelvis) frozen at fixed height
+          - Waist roll/pitch constrained
+        
+        Stage 2: Lower body IK with base Z and yaw free
+          - Arm joints frozen to Stage 1 values
+          - Solves for leg joints (hips, knees, ankles)
+          - Pelvis Z (height) derived from foot positions
+          - Pelvis XY stays at origin
+        
+        This decoupling prevents lower body optimization from regressing upper body.
+        
+        Args:
+            skeleton_3d: MediaPipe 33-landmark skeleton (33x3 array)
+            human_height: Optional human height for scaling
+            reset_to_default: Whether to reset robot to default pose before solving
+        
+        Returns:
+            dict with joint angles, qpos, error, etc.
+        """
+        # Extract human end-effectors
+        human_data = extract_human_end_effectors(skeleton_3d)
+        
+        if human_data is None:
+            if self.verbose:
+                print("[IK] Invalid skeleton data (contains NaN)")
+            return {
+                'joint_angles_rad': {},
+                'qpos': None,
+                'error': float('nan'),
+                'iterations': 0,
+                'valid': False,
+            }
+        
+        ee_data = human_data['end_effectors']
+        
+        if human_height is None:
+            human_height = human_data['height']
+        
+        # Compute per-limb scale factors
+        human_arm_length = human_data.get('arm_length', human_height * 0.4)
+        human_leg_length = human_data.get('leg_length', human_height * 0.5)
+        
+        arm_scale = self.robot_arm_length / human_arm_length if human_arm_length > 0.1 else 1.0
+        leg_scale = self.robot_leg_length / human_leg_length if human_leg_length > 0.1 else 1.0
+        height_scale = self.robot_height / human_height if human_height > 0.1 else 1.0
+        
+        if self.verbose:
+            print(f"\n[Two-Stage IK] Starting...")
+            print(f"  Human: height={human_height:.3f}m, arm={human_arm_length:.3f}m, leg={human_leg_length:.3f}m")
+            print(f"  Scale: height={height_scale:.3f}, arm={arm_scale:.3f}, leg={leg_scale:.3f}")
+        
+        # Reset robot to default pose
+        if reset_to_default:
+            self.reset_to_default()
+        
+        # =====================================================================
+        # STAGE 1: Upper Body IK (fixed base)
+        # =====================================================================
+        if self.verbose:
+            print(f"\n[Stage 1] Upper Body IK (fixed base)")
+        
+        # Fixed pelvis height for Stage 1
+        stage1_pelvis_z = 0.75
+        self.configuration.data.qpos[2] = stage1_pelvis_z
+        mujoco.mj_forward(self.model, self.configuration.data)
+        
+        pelvis_body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
+        robot_pelvis_world = self.configuration.data.xpos[pelvis_body_id].copy()
+        
+        # Set upper body targets (hands and elbows)
+        for ee_name in ROBOT_EE_BODIES_UPPER.keys():
+            if ee_name not in ee_data or ee_name not in self.tasks:
+                continue
+            
+            ee_info = ee_data[ee_name]
+            human_pos_rel = ee_info['position'].copy()
+            robot_pos_rel = human_pos_rel * arm_scale
+            target_pos = robot_pos_rel + robot_pelvis_world
+            target_quat = ee_info['orientation']
+            
+            rotation = mink.SO3(target_quat)
+            pose = mink.SE3.from_rotation_and_translation(rotation, target_pos)
+            self.tasks[ee_name].set_target(pose)
+            
+            if self.verbose:
+                print(f"    {ee_name}: [{robot_pos_rel[0]:+.3f}, {robot_pos_rel[1]:+.3f}, {robot_pos_rel[2]:+.3f}]")
+        
+        # Solve Stage 1 (base frozen)
+        dt = self.model.opt.timestep
+        max_waist_tilt = np.radians(5.0)
+        
+        stage1_iterations = 0
+        prev_error = self._compute_error()
+        
+        for i in range(self.max_iterations):
+            vel = mink.solve_ik(
+                self.configuration,
+                self.all_tasks,
+                dt,
+                self.solver,
+                damping=self.damping,
+                limits=self.ik_limits,
+                constraints=[self.base_freezing_constraint],  # Base frozen
+            )
+            self.configuration.integrate_inplace(vel, dt)
+            
+            # Clamp waist roll and pitch
+            for joint_name, qpos_idx in self.waist_joint_indices.items():
+                self.configuration.data.qpos[qpos_idx] = np.clip(
+                    self.configuration.data.qpos[qpos_idx],
+                    -max_waist_tilt, max_waist_tilt
+                )
+            mujoco.mj_forward(self.model, self.configuration.data)
+            
+            curr_error = self._compute_error()
+            if abs(prev_error - curr_error) < 0.001:
+                break
+            prev_error = curr_error
+            stage1_iterations = i + 1
+        
+        stage1_error = curr_error
+        
+        if self.verbose:
+            print(f"  Stage 1 converged: {stage1_iterations} iters, error={stage1_error:.4f}")
+        
+        # Save Stage 1 arm joint values (DOFs 21-34 in velocity space = joints 15-28)
+        # Joint indices in qpos: 7 (base) + 12 (legs) + 3 (waist) = 22 start for left arm
+        # Left arm: qpos[22:29], Right arm: qpos[29:36]
+        stage1_arm_qpos = self.configuration.data.qpos[22:36].copy()
+        
+        # =====================================================================
+        # STAGE 2: Lower Body IK (base Z free, arms frozen)
+        # =====================================================================
+        if self.verbose:
+            print(f"\n[Stage 2] Lower Body IK (base Z free, arms frozen)")
+        
+        # Setup lower body tracking tasks (create if not exist)
+        # Feet: full weight (primary targets)
+        # Knees: low weight (soft hints, like elbows for arms)
+        if not hasattr(self, 'lower_body_tasks'):
+            self.lower_body_tasks = {}
+            
+            # Weight configuration for lower body
+            FOOT_POSITION_WEIGHT = 1.0    # Full weight for foot position
+            KNEE_POSITION_WEIGHT = 0.3    # Moderate weight - helps guide knee bending for crouching
+            
+            for ee_name, body_name in ROBOT_EE_BODIES_LOWER.items():
+                if 'foot' in ee_name:
+                    position_cost = self.position_weight * FOOT_POSITION_WEIGHT
+                elif 'knee' in ee_name:
+                    position_cost = self.position_weight * KNEE_POSITION_WEIGHT
+                else:
+                    position_cost = self.position_weight
+                
+                task = mink.FrameTask(
+                    frame_name=body_name,
+                    frame_type="body",
+                    position_cost=position_cost,
+                    orientation_cost=0.0,  # Position only
+                    lm_damping=1.0,
+                )
+                self.lower_body_tasks[ee_name] = task
+            
+            if self.verbose:
+                print(f"    Lower body tasks: feet={FOOT_POSITION_WEIGHT}, knees={KNEE_POSITION_WEIGHT}")
+        
+        # Setup arm freezing constraint (freeze arm DOFs in velocity space)
+        # DOFs 21-34 are left and right arm joints
+        if not hasattr(self, 'arm_freezing_constraint'):
+            arm_dof_indices = list(range(21, 35))  # DOFs 21-34 in velocity space
+            self.arm_freezing_constraint = DofFreezingTask(
+                model=self.model,
+                dof_indices=arm_dof_indices,
+                gain=1.0,
+            )
+            if self.verbose:
+                print(f"    Arm freezing: DOFs {arm_dof_indices}")
+        
+        # Compute target pelvis height from human foot positions
+        left_foot_rel_z = ee_data['left_foot']['position'][2] * leg_scale
+        right_foot_rel_z = ee_data['right_foot']['position'][2] * leg_scale
+        min_foot_rel_z = min(left_foot_rel_z, right_foot_rel_z)
+        
+        # Pelvis height = ground clearance - lowest foot relative Z
+        ground_clearance = 0.05  # Ankle height above ground
+        stage2_pelvis_z = ground_clearance - min_foot_rel_z
+        stage2_pelvis_z = np.clip(stage2_pelvis_z, 0.4, 0.85)
+        
+        if self.verbose:
+            print(f"    Pelvis Z: {stage1_pelvis_z:.3f} → {stage2_pelvis_z:.3f}")
+        
+        # Update pelvis height
+        self.configuration.data.qpos[2] = stage2_pelvis_z
+        mujoco.mj_forward(self.model, self.configuration.data)
+        robot_pelvis_world = self.configuration.data.xpos[pelvis_body_id].copy()
+        
+        # Set lower body targets (feet and knees)
+        for ee_name, task in self.lower_body_tasks.items():
+            if ee_name not in ee_data:
+                continue
+            
+            ee_info = ee_data[ee_name]
+            human_pos_rel = ee_info['position'].copy()
+            robot_pos_rel = human_pos_rel * leg_scale
+            target_pos = robot_pos_rel + robot_pelvis_world
+            
+            # Clamp foot Z to ground level (but not knees)
+            if 'foot' in ee_name:
+                target_pos[2] = max(target_pos[2], 0.02)
+                target_pos[2] = min(target_pos[2], 0.15)
+            
+            target_quat = ee_info['orientation']
+            rotation = mink.SO3(target_quat)
+            pose = mink.SE3.from_rotation_and_translation(rotation, target_pos)
+            task.set_target(pose)
+            
+            if self.verbose:
+                print(f"    {ee_name}: [{robot_pos_rel[0]:+.3f}, {robot_pos_rel[1]:+.3f}, {robot_pos_rel[2]:+.3f}]")
+        
+        # Combine tasks for Stage 2 (upper body tasks + lower body tasks + posture)
+        stage2_tasks = list(self.tasks.values()) + list(self.lower_body_tasks.values())
+        if self.posture_task is not None:
+            stage2_tasks.append(self.posture_task)
+        
+        # Setup base constraint for Stage 2: freeze XY and orientation, allow Z
+        # DOFs: 0=x, 1=y, 2=z, 3=rx, 4=ry, 5=rz
+        # Freeze: XY (0,1) and full orientation (3,4,5)
+        if not hasattr(self, 'base_xy_rot_freezing'):
+            self.base_xy_rot_freezing = DofFreezingTask(
+                model=self.model,
+                dof_indices=[0, 1, 3, 4, 5],  # Keep Z (2) free
+                gain=1.0,
+            )
+        
+        # Solve Stage 2 (arms frozen, base XY frozen, base Z free)
+        stage2_iterations = 0
+        prev_error = sum(np.linalg.norm(t.compute_error(self.configuration)) for t in stage2_tasks)
+        
+        for i in range(self.max_iterations):
+            vel = mink.solve_ik(
+                self.configuration,
+                stage2_tasks,
+                dt,
+                self.solver,
+                damping=self.damping,
+                limits=self.ik_limits,
+                constraints=[self.arm_freezing_constraint, self.base_xy_rot_freezing],
+            )
+            self.configuration.integrate_inplace(vel, dt)
+            
+            # Re-enforce arm joint values from Stage 1 (belt and suspenders)
+            self.configuration.data.qpos[22:36] = stage1_arm_qpos
+            
+            # Clamp waist roll and pitch
+            for joint_name, qpos_idx in self.waist_joint_indices.items():
+                self.configuration.data.qpos[qpos_idx] = np.clip(
+                    self.configuration.data.qpos[qpos_idx],
+                    -max_waist_tilt, max_waist_tilt
+                )
+            
+            # Clamp pelvis Z to reasonable range
+            self.configuration.data.qpos[2] = np.clip(
+                self.configuration.data.qpos[2], 0.4, 0.85
+            )
+            
+            mujoco.mj_forward(self.model, self.configuration.data)
+            
+            curr_error = sum(np.linalg.norm(t.compute_error(self.configuration)) for t in stage2_tasks)
+            if abs(prev_error - curr_error) < 0.001:
+                break
+            prev_error = curr_error
+            stage2_iterations = i + 1
+        
+        stage2_error = curr_error
+        
+        if self.verbose:
+            print(f"  Stage 2 converged: {stage2_iterations} iters, error={stage2_error:.4f}")
+        
+        # =====================================================================
+        # Extract final results
+        # =====================================================================
+        qpos = self.configuration.data.qpos.copy()
+        
+        # Fix base XY to 0 and ensure upright orientation
+        qpos[0] = 0.0  # X
+        qpos[1] = 0.0  # Y
+        # qpos[2] is Z height from Stage 2
+        qpos[3] = 1.0  # quat w
+        qpos[4] = 0.0  # quat x
+        qpos[5] = 0.0  # quat y
+        qpos[6] = 0.0  # quat z
+        
+        joint_angles_rad = {}
+        for idx, joint_name in enumerate(JOINT_ORDER):
+            joint_angles_rad[joint_name] = qpos[7 + idx]
+        
+        total_iterations = stage1_iterations + stage2_iterations
+        combined_error = stage1_error + stage2_error
+        
+        if self.verbose:
+            print(f"\n[Two-Stage IK] Complete")
+            print(f"  Final pelvis Z: {qpos[2]:.3f}m")
+            print(f"  Total iterations: {total_iterations}")
+            print(f"  Combined error: {combined_error:.4f}")
+        
+        return {
+            'joint_angles_rad': joint_angles_rad,
+            'qpos': qpos,
+            'error': combined_error,
+            'iterations': total_iterations,
+            'stage1_error': stage1_error,
+            'stage2_error': stage2_error,
+            'stage1_iterations': stage1_iterations,
+            'stage2_iterations': stage2_iterations,
+            'height_scale': height_scale,
+            'arm_scale': arm_scale,
+            'leg_scale': leg_scale,
+            'pelvis_z': qpos[2],
+            'valid': True,
+        }
+    
     def get_ee_positions(self) -> dict:
         """Get current end-effector positions from robot state."""
         mujoco.mj_forward(self.model, self.configuration.data)
@@ -934,7 +1323,7 @@ def load_human_pose(filepath: Path) -> dict:
         return json.load(f)
 
 
-def test_single_pose(pose_name: str, visualize: bool = False):
+def test_single_pose(pose_name: str, visualize: bool = False, two_stage: bool = False):
     """Test IK retargeting on a single captured pose."""
     # Find pose file
     pose_file = None
@@ -947,8 +1336,10 @@ def test_single_pose(pose_name: str, visualize: bool = False):
         print(f"Pose not found: {pose_name}")
         return
     
+    mode_str = "Two-Stage" if two_stage else "Single-Stage (Upper Body)"
     print(f"\n{'='*60}")
     print(f"Testing pose: {pose_file.stem}")
+    print(f"Mode: {mode_str}")
     print(f"{'='*60}")
     
     # Load human pose
@@ -958,14 +1349,22 @@ def test_single_pose(pose_name: str, visualize: bool = False):
     # Create retargeter
     retargeter = EndEffectorIKRetargeter(verbose=True)
     
-    # Retarget
-    result = retargeter.retarget(skeleton_3d)
+    # Retarget (choose method based on two_stage flag)
+    if two_stage:
+        result = retargeter.retarget_two_stage(skeleton_3d)
+    else:
+        result = retargeter.retarget(skeleton_3d, fixed_base=True)
     
     # Print results
     print(f"\n[Results]")
     print(f"  Height scale: {result['height_scale']:.3f}, Arm scale: {result['arm_scale']:.3f}, Leg scale: {result['leg_scale']:.3f}")
     print(f"  IK error: {result['error']:.4f}")
     print(f"  Iterations: {result['iterations']}")
+    
+    if two_stage:
+        print(f"  Stage 1 (upper body): {result['stage1_iterations']} iters, error={result['stage1_error']:.4f}")
+        print(f"  Stage 2 (lower body): {result['stage2_iterations']} iters, error={result['stage2_error']:.4f}")
+        print(f"  Final pelvis Z: {result['pelvis_z']:.3f}m")
     
     print(f"\n[Joint Angles (degrees)]")
     for joint_name, angle_rad in result['joint_angles_rad'].items():
@@ -985,7 +1384,7 @@ def test_single_pose(pose_name: str, visualize: bool = False):
     return result
 
 
-def test_all_poses():
+def test_all_poses(two_stage: bool = False):
     """Test IK retargeting on all captured poses."""
     pose_files = sorted(HUMAN_POSES_DIR.glob("*.json"))
     
@@ -993,7 +1392,8 @@ def test_all_poses():
         print("No poses found")
         return
     
-    print(f"\nTesting {len(pose_files)} poses...")
+    mode_str = "Two-Stage" if two_stage else "Single-Stage (Upper Body)"
+    print(f"\nTesting {len(pose_files)} poses with {mode_str} IK...")
     
     retargeter = EndEffectorIKRetargeter(verbose=False)
     
@@ -1002,12 +1402,18 @@ def test_all_poses():
         human_pose = load_human_pose(pose_file)
         skeleton_3d = np.array(human_pose["skeleton_3d"])
         
-        result = retargeter.retarget(skeleton_3d, reset_to_default=True)
+        if two_stage:
+            result = retargeter.retarget_two_stage(skeleton_3d, reset_to_default=True)
+        else:
+            result = retargeter.retarget(skeleton_3d, reset_to_default=True, fixed_base=True)
         result['pose_name'] = pose_file.stem
         results.append(result)
         
         if result.get('valid', False):
-            print(f"  {pose_file.stem}: error={result['error']:.4f}, iters={result['iterations']}")
+            if two_stage:
+                print(f"  {pose_file.stem}: error={result['error']:.4f}, iters={result['iterations']}, pelvis_z={result['pelvis_z']:.3f}")
+            else:
+                print(f"  {pose_file.stem}: error={result['error']:.4f}, iters={result['iterations']}")
         else:
             print(f"  {pose_file.stem}: INVALID (NaN in skeleton)")
     
@@ -1021,6 +1427,14 @@ def test_all_poses():
         print(f"  Average iterations: {avg_iters:.1f}")
         print(f"  Min error: {min(r['error'] for r in valid_results):.4f}")
         print(f"  Max error: {max(r['error'] for r in valid_results):.4f}")
+        
+        if two_stage:
+            avg_pelvis_z = np.mean([r['pelvis_z'] for r in valid_results])
+            avg_s1_error = np.mean([r['stage1_error'] for r in valid_results])
+            avg_s2_error = np.mean([r['stage2_error'] for r in valid_results])
+            print(f"  Average pelvis Z: {avg_pelvis_z:.3f}m")
+            print(f"  Average Stage 1 error: {avg_s1_error:.4f}")
+            print(f"  Average Stage 2 error: {avg_s2_error:.4f}")
     else:
         print("\nNo valid poses found.")
     
@@ -1028,7 +1442,7 @@ def test_all_poses():
 
 
 def visualize_in_mujoco(model, qpos):
-    """Visualize robot pose in MuJoCo viewer."""
+    """Visualize robot pose in MuJoCo viewer (kinematics only, no physics)."""
     try:
         import mujoco.viewer
     except ImportError:
@@ -1039,11 +1453,17 @@ def visualize_in_mujoco(model, qpos):
     data.qpos[:] = qpos
     mujoco.mj_forward(model, data)
     
-    print("\nLaunching MuJoCo viewer... (close window to continue)")
+    print("\nLaunching MuJoCo viewer (kinematics only)... (close window to continue)")
+    print("  Robot pose is static - no physics simulation")
+    
     with mujoco.viewer.launch_passive(model, data) as viewer:
         while viewer.is_running():
-            mujoco.mj_step(model, data)
+            # Only update kinematics, no physics stepping
+            mujoco.mj_forward(model, data)
             viewer.sync()
+            # Small sleep to avoid busy loop
+            import time
+            time.sleep(0.016)  # ~60 FPS
 
 
 def visualize_comparison(pose_name: str):
@@ -1390,6 +1810,8 @@ def main():
     parser.add_argument("--compare", "-c", action="store_true", 
                        help="Visualize human vs robot side-by-side (matplotlib)")
     parser.add_argument("--list", "-l", action="store_true", help="List available poses")
+    parser.add_argument("--two-stage", "-2", action="store_true",
+                       help="Use two-stage IK (upper body first, then lower body)")
     args = parser.parse_args()
     
     if args.list:
@@ -1417,14 +1839,14 @@ def main():
             else:
                 print("No poses found.")
     elif args.all:
-        test_all_poses()
+        test_all_poses(two_stage=args.two_stage)
     elif args.pose:
-        test_single_pose(args.pose, visualize=args.viz)
+        test_single_pose(args.pose, visualize=args.viz, two_stage=args.two_stage)
     else:
         # Default: test first pose
         poses = sorted(HUMAN_POSES_DIR.glob("*.json"))
         if poses:
-            test_single_pose(poses[0].stem, visualize=args.viz)
+            test_single_pose(poses[0].stem, visualize=args.viz, two_stage=args.two_stage)
         else:
             print("No poses found. Capture some poses first with capture_pose_simple.py")
 
