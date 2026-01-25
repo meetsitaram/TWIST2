@@ -436,6 +436,7 @@ def replay_episode(
     speed: float = 1.0,
     loop: bool = False,
     show_video: bool = False,
+    camera_id: int = None,
 ):
     """
     Replay an episode in MuJoCo viewer.
@@ -445,11 +446,16 @@ def replay_episode(
         speed: Playback speed multiplier
         loop: Whether to loop playback
         show_video: Whether to show recorded video alongside
+        camera_id: Specific camera ID to show (None = all cameras)
     """
     from mujoco.viewer import launch_passive
     
     # Load episode
-    filepath = EPISODES_DIR / f"{episode_name}.npz"
+    # Episodes are stored in subdirectories: EPISODES_DIR/episode_name/episode_name.npz
+    filepath = EPISODES_DIR / episode_name / f"{episode_name}.npz"
+    if not filepath.exists():
+        # Try old format (flat directory) for backward compatibility
+        filepath = EPISODES_DIR / f"{episode_name}.npz"
     if not filepath.exists():
         print(f"Episode not found: {episode_name}")
         print(f"Looking in: {EPISODES_DIR}")
@@ -483,12 +489,28 @@ def replay_episode(
     # Video playback setup
     video_caps = {}
     if show_video and HAS_CV2:
-        video_files = sorted(filepath.parent.glob(f"{episode.name}_cam*.mp4"))
-        for vf in video_files:
-            cap = cv2.VideoCapture(str(vf))
-            if cap.isOpened():
-                video_caps[vf.stem] = cap
-                print(f"  Loaded video: {vf.name}")
+        if camera_id is not None:
+            # Load specific camera only
+            video_file = filepath.parent / f"{episode.name}_cam{camera_id}.mp4"
+            if video_file.exists():
+                cap = cv2.VideoCapture(str(video_file))
+                if cap.isOpened():
+                    video_caps[video_file.stem] = cap
+                    # Create resizable window
+                    cv2.namedWindow(video_file.stem, cv2.WINDOW_NORMAL)
+                    print(f"  Loaded video: {video_file.name}")
+            else:
+                print(f"  Warning: Camera {camera_id} video not found: {video_file.name}")
+        else:
+            # Load all cameras
+            video_files = sorted(filepath.parent.glob(f"{episode.name}_cam*.mp4"))
+            for vf in video_files:
+                cap = cv2.VideoCapture(str(vf))
+                if cap.isOpened():
+                    video_caps[vf.stem] = cap
+                    # Create resizable window
+                    cv2.namedWindow(vf.stem, cv2.WINDOW_NORMAL)
+                    print(f"  Loaded video: {vf.name}")
     elif show_video and not HAS_CV2:
         print("  Warning: OpenCV not available for video playback")
     
@@ -535,11 +557,7 @@ def replay_episode(
                 for name, cap in video_caps.items():
                     ret, img = cap.read()
                     if ret:
-                        # Resize for display
-                        h, w = img.shape[:2]
-                        scale = 480 / h
-                        img_small = cv2.resize(img, (int(w * scale), 480))
-                        cv2.imshow(name, img_small)
+                        cv2.imshow(name, img)
                 cv2.waitKey(1)
             
             # Print progress
@@ -628,6 +646,8 @@ Examples:
                        help="Playback speed for replay (default: 1.0)")
     parser.add_argument("--loop", "-l", action="store_true",
                        help="Loop replay playback")
+    parser.add_argument("--cam", type=int, default=None,
+                       help="Specific camera ID to show during replay (default: all)")
     
     # Live streaming options
     parser.add_argument("--cameras", "-c", type=int, nargs="+", default=None,
@@ -677,6 +697,7 @@ Examples:
             speed=args.speed,
             loop=args.loop,
             show_video=args.video,
+            camera_id=args.cam,
         )
         return
     
