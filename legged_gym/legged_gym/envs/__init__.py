@@ -58,7 +58,7 @@ task_registry.register("g1_priv_mimic", G1MimicDistill, G1MimicPrivCfg(), G1Mimi
 task_registry.register("g1_stu_rl", G1MimicDistill, G1MimicStuRLCfg(), G1MimicStuRLCfgDAgger())
 task_registry.register("g1_stu_future", G1MimicFuture, G1MimicStuFutureCfg(), G1MimicStuFutureCfgDAgger())
 
-# Custom teleop motion training
-task_registry.register("g1_teleop", G1MimicFuture, G1TeleopCfg(), G1TeleopCfgPPO())
+# Custom teleop motion training (uses same env class as g1_priv_mimic)
+task_registry.register("g1_teleop", G1MimicDistill, G1TeleopCfg(), G1TeleopCfgPPO())
 
 

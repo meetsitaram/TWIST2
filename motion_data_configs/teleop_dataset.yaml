@@ -2,7 +2,8 @@
 # Generated from teleop episodes
 # Config: teleop_dataset
 
-root_path: /home/stickbot/projects/g1-pick-n-place/TWIST2/datasets/teleop_motions
+# Relative path from this YAML file's directory (works on any machine)
+root_path: ../datasets/teleop_motions
 
 motions:
   - file: baseline_001.pkl
