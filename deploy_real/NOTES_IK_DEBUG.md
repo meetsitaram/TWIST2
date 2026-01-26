@@ -1057,3 +1057,125 @@ TWIST2/
 cd ~/projects/g1-pick-n-place/TWIST2
 tensorboard --logdir logs/isaaclab/motion_mimic
 ```
+
+---
+
+## Session Notes - Jan 26, 2026 (Continued)
+
+### Play Script for Policy Visualization
+
+Created `scripts/play_isaaclab.py` to visualize trained policies in Isaac Lab viewer.
+
+**Usage:**
+```bash
+cd ~/projects/g1-pick-n-place/TWIST2
+conda activate env_isaaclab
+
+# Basic playback
+python scripts/play_isaaclab.py \
+    --checkpoint logs/isaaclab/motion_mimic/model_9500.pt \
+    --num_envs 16
+
+# With push disturbances (test robustness)
+python scripts/play_isaaclab.py \
+    --checkpoint logs/isaaclab/motion_mimic/model_9500.pt \
+    --num_envs 16 \
+    --push --push_force 100 --push_interval 3
+```
+
+**Options:**
+- `--checkpoint`: Path to trained model checkpoint
+- `--num_envs`: Number of robots to visualize (default: 16)
+- `--push`: Enable random push disturbances
+- `--push_force`: Push force in Newtons (default: 50)
+- `--push_interval`: Seconds between pushes (default: 5)
+
+### Bug Fixes
+
+#### 1. Robot Respawning Issue
+Fallen robots weren't resetting. Two fixes applied:
+
+1. **Height-based termination** added to `g1_motion_mimic_env_cfg.py`:
+   ```python
+   bad_height = DoneTerm(
+       func=mdp.root_height_below_minimum,
+       params={"minimum_height": 0.3, "asset_cfg": SceneEntityCfg("robot")},
+   )
+   ```
+
+2. **Fixed play script** - removed `reset_base = None` which was preventing robot position reset
+
+#### 2. Wide Stance Issue
+Robot was spreading legs too far apart (>1.5m). Added feet distance penalty:
+
+```python
+# In motion_mdp.py
+def feet_distance_penalty(env, asset_cfg, min_dist=0.1, max_dist=0.6):
+    """Penalty for feet being too far apart or too close together."""
+    # Returns positive penalty if outside [min_dist, max_dist] range
+
+# In g1_motion_mimic_env_cfg.py
+feet_distance = RewTerm(
+    func=motion_mdp.feet_distance_penalty,
+    weight=-5.0,
+    params={"min_dist": 0.1, "max_dist": 0.6},  # 10-60cm acceptable
+)
+```
+
+### Robustness Training (Stage 2)
+
+Added support for curriculum learning with push disturbances.
+
+**Workflow:**
+1. **Stage 1**: Train basic motion skills (no pushes)
+   ```bash
+   python scripts/train_isaaclab.py --num_envs 4096 --max_iterations 200000
+   ```
+
+2. **Stage 2**: Fine-tune with push disturbances
+   ```bash
+   python scripts/train_isaaclab.py \
+       --robust \
+       --checkpoint logs/isaaclab/motion_mimic/model_200000.pt \
+       --max_iterations 250000
+   ```
+
+**Robust mode** (`--robust` flag):
+- Enables random push disturbances every 8-12 seconds
+- Push velocity: ±0.8 m/s in X/Y directions
+- Uses `G1MotionMimicEnvCfg_ROBUST` config class
+
+### Updated Files Reference
+
+```
+TWIST2/
+├── isaaclab_envs/
+│   ├── __init__.py                 # Registers gym task
+│   ├── g1_motion_mimic_env.py      # Environment class
+│   ├── g1_motion_mimic_env_cfg.py  # Config (includes _ROBUST, _PLAY variants)
+│   ├── motion_lib.py               # Vectorized motion library (228x speedup)
+│   ├── motion_mdp.py               # Custom MDP functions (incl. feet_distance_penalty)
+│   └── agents/
+│       └── rsl_rl_ppo_cfg.py       # PPO config
+├── scripts/
+│   ├── train_isaaclab.py           # Training script (supports --robust)
+│   └── play_isaaclab.py            # Visualization script (supports --push)
+├── logs/
+│   └── isaaclab/motion_mimic/      # Checkpoints and TensorBoard logs
+└── motion_data_configs/
+    └── teleop_dataset.yaml         # Points to converted motions
+```
+
+### Training Progress Notes
+
+Current training configuration:
+- 6144 parallel environments
+- ~160,000 steps/s computation speed
+- ~0.9s per iteration
+- Using TensorBoard for logging (wandb has compatibility issues)
+
+Key metrics to watch:
+- `Episode_Reward/tracking_joint_dof`: Should be non-zero and increasing
+- `Episode_Reward/feet_distance`: New penalty for wide stance
+- `Episode_Termination/base_contact`: Falls due to contact
+- `Episode_Termination/bad_height`: Falls detected by height threshold

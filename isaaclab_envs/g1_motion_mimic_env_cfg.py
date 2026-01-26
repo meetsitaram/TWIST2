@@ -109,6 +109,17 @@ class G1MotionMimicRewards(RewardsCfg):
         },
     )
     
+    # Feet distance penalty - discourage legs spreading too far apart
+    feet_distance = RewTerm(
+        func=motion_mdp.feet_distance_penalty,
+        weight=-5.0,  # Strong penalty for wide stance
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "min_dist": 0.1,   # Min 10cm between feet
+            "max_dist": 0.6,   # Max 60cm between feet (normal walking width)
+        },
+    )
+    
     # === SMOOTHNESS PENALTIES ===
     
     # Action rate penalty
@@ -184,10 +195,20 @@ class G1MotionMimicTerminations:
     # Time out
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
     
-    # Base contact (falling)
+    # Base contact (falling) - detect contact on upper body parts
+    # Using regex to match torso, pelvis, head, waist, shoulders
     base_contact = DoneTerm(
         func=mdp.illegal_contact,
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names="torso_link"), "threshold": 1.0},
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*torso.*|.*pelvis.*|.*head.*|.*waist.*"), 
+            "threshold": 0.5  # Lower threshold for more sensitive detection
+        },
+    )
+    
+    # Height-based termination - robot root Z too low means it fell
+    bad_height = DoneTerm(
+        func=mdp.root_height_below_minimum,
+        params={"minimum_height": 0.3, "asset_cfg": SceneEntityCfg("robot")},
     )
     
     # Motion tracking failure (too far from target)
@@ -273,6 +294,40 @@ class G1MotionMimicEnvCfg(G1FlatEnvCfg):
         # Adjust domain randomization for motion imitation
         self.events.push_robot = None  # Disable pushing during initial training
         self.events.add_base_mass = None
+
+
+@configclass
+class G1MotionMimicEnvCfg_ROBUST(G1MotionMimicEnvCfg):
+    """Stage 2: Robustness training with push disturbances.
+    
+    Use this config after the robot has learned basic motion skills.
+    Enables random push disturbances to improve stability.
+    
+    Usage:
+        python scripts/train_isaaclab.py --robust --resume logs/.../model_5000.pt
+    """
+    
+    def __post_init__(self):
+        super().__post_init__()
+        
+        # Re-enable push disturbances (parent disables them)
+        from isaaclab.managers import EventTermCfg
+        from isaaclab.envs.mdp import events as mdp_events
+        
+        self.events.push_robot = EventTermCfg(
+            func=mdp_events.push_by_setting_velocity,
+            mode="interval",
+            interval_range_s=(8.0, 12.0),  # Push every 8-12 seconds
+            params={
+                "velocity_range": {
+                    "x": (-0.8, 0.8),  # Stronger than default
+                    "y": (-0.8, 0.8),
+                }
+            },
+        )
+        
+        # Optionally enable mass randomization for extra robustness
+        # self.events.add_base_mass = EventTermCfg(...)
 
 
 @configclass

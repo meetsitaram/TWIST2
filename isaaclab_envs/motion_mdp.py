@@ -271,6 +271,51 @@ def tracking_root_orientation(
     return torch.exp(-rot_error / std)
 
 
+def feet_distance_penalty(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    min_dist: float = 0.1,
+    max_dist: float = 0.5,
+) -> torch.Tensor:
+    """Penalty for feet being too far apart or too close together.
+    
+    Computes the lateral (Y-axis in robot frame) distance between feet
+    and penalizes if outside the desired range.
+    
+    Args:
+        env: The environment instance.
+        asset_cfg: Configuration for the robot asset.
+        min_dist: Minimum acceptable distance between feet (meters).
+        max_dist: Maximum acceptable distance between feet (meters).
+    
+    Returns:
+        Penalty tensor of shape (num_envs,). Returns 0 if in range,
+        positive value if out of range (to be used with negative weight).
+    """
+    robot = env.scene[asset_cfg.name]
+    
+    # Get foot body indices - assuming left and right ankle roll links
+    left_foot_idx = robot.find_bodies("left_ankle_roll_link")[0][0]
+    right_foot_idx = robot.find_bodies("right_ankle_roll_link")[0][0]
+    
+    # Get foot positions in world frame
+    body_pos = robot.data.body_pos_w  # (num_envs, num_bodies, 3)
+    left_foot_pos = body_pos[:, left_foot_idx, :]  # (num_envs, 3)
+    right_foot_pos = body_pos[:, right_foot_idx, :]  # (num_envs, 3)
+    
+    # Compute lateral distance (in world Y, approximate for robot Y)
+    # For more accuracy, could transform to robot frame
+    feet_distance = torch.norm(left_foot_pos[:, :2] - right_foot_pos[:, :2], dim=1)
+    
+    # Penalty: 0 if in range, positive if out of range
+    too_close = torch.clamp(min_dist - feet_distance, min=0.0)
+    too_far = torch.clamp(feet_distance - max_dist, min=0.0)
+    
+    penalty = too_close + too_far
+    
+    return penalty
+
+
 ##############################################################################
 # TERMINATION FUNCTIONS
 ##############################################################################
