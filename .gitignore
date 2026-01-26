@@ -85,8 +85,9 @@ calibration/*.png
 calibration/*.json
 calibration/*.toml
 
-# Datasets (teleop recordings, etc.)
-datasets/
+# Datasets - ignore raw episodes (large videos), keep converted motions
+datasets/teleop_episodes/
+!datasets/teleop_motions/
 
 # Recordings
 recordings/
