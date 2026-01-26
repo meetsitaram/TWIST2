@@ -13,45 +13,45 @@ Train G1 teleop motion imitation policies on cloud GPU instances.
 ### 1. Clone Repository
 
 ```bash
-git clone https://github.com/<your-username>/g1-pick-n-place.git
-cd g1-pick-n-place/TWIST2
+git clone https://github.com/meetsitaram/TWIST2.git
+cd TWIST2
 ```
 
-### 2. Create Environment
+### 2. Run Install Script
+
+The repo includes a resumable installation script that handles everything:
 
 ```bash
+bash install_twist2.sh
+```
+
+This will:
+- Create `twist2` conda environment (Python 3.8)
+- Prompt you to install Isaac Gym (download from [NVIDIA](https://developer.nvidia.com/isaac-gym))
+- Install all TWIST2 packages (legged_gym, pose, rsl_rl)
+- Install dependencies (PyTorch, MuJoCo, Redis, etc.)
+- Verify the installation
+
+The script is **resumable** - if it fails, just run it again and it will continue from where it left off.
+
+### 3. Manual Install (Alternative)
+
+If you prefer manual installation:
+
+```bash
+# Create environment
 conda create -n twist2 python=3.8 -y
 conda activate twist2
 
-# PyTorch with CUDA 12.1
-pip install torch==2.4.1 torchvision --index-url https://download.pytorch.org/whl/cu121
-```
+# Install Isaac Gym first
+cd /path/to/isaacgym/python && pip install -e .
 
-### 3. Install Isaac Gym
+# Install TWIST2 packages
+cd ~/TWIST2
+pip install -e ./rsl_rl -e ./legged_gym -e ./pose
 
-Download from [NVIDIA Isaac Gym](https://developer.nvidia.com/isaac-gym) and upload to your instance.
-
-```bash
-cd /path/to/isaacgym/python
-pip install -e .
-
-# Verify installation
-python -c "import isaacgym; print('Isaac Gym OK')"
-```
-
-### 4. Install TWIST2 Dependencies
-
-```bash
-cd ~/g1-pick-n-place/TWIST2
-
-# Install legged_gym
-cd legged_gym && pip install -e . && cd ..
-
-# Install pose utilities
-cd pose && pip install -e . && cd ..
-
-# Additional dependencies
-pip install tensorboard rich pyyaml
+# Verify
+python -c "import isaacgym; import torch; print('CUDA:', torch.cuda.is_available())"
 ```
 
 ### 5. Train

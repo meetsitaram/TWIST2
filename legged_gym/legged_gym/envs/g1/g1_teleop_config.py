@@ -4,16 +4,11 @@ G1 Teleop Training Config
 Training config specifically for custom teleop motion data captured via
 multi-camera MediaPipe system and IK retargeting.
 
-Based on G1MimicStuFutureCfg but configured for teleop dataset.
+Based on G1MimicPrivCfg (privileged teacher) for pure RL training.
 """
 
 from legged_gym.envs.g1.g1_mimic_distill_config import G1MimicPrivCfg, G1MimicPrivCfgPPO
-from legged_gym.envs.base.humanoid_mimic_config import HumanoidMimicCfgPPO
 from legged_gym import LEGGED_GYM_ROOT_DIR
-
-
-# Future motion steps - single frame for simpler training
-TAR_MOTION_STEPS_FUTURE = [0]
 
 
 class G1TeleopCfg(G1MimicPrivCfg):
@@ -21,28 +16,12 @@ class G1TeleopCfg(G1MimicPrivCfg):
     
     This config is optimized for upper-body focused motions captured
     via MediaPipe + IK retargeting, with fixed base (standing in place).
+    Uses privileged (teacher) observation setup for pure RL training.
     """
     
     class env(G1MimicPrivCfg.env):
-        obs_type = 'student_future'
-        
-        # Motion step configuration
-        tar_motion_steps = [0]
-        tar_motion_steps_future = TAR_MOTION_STEPS_FUTURE
-        
-        # Observation dimensions
-        n_mimic_obs_single = 6 + 29
-        n_mimic_obs = len(tar_motion_steps) * n_mimic_obs_single
-        n_proprio = G1MimicPrivCfg.env.n_proprio
-
-        n_future_obs_single = 6 + 29
-        n_future_obs = len(tar_motion_steps_future) * n_future_obs_single
-        
-        n_obs_single = n_mimic_obs + n_proprio
-        num_observations = n_obs_single * (G1MimicPrivCfg.env.history_len + 1) + n_future_obs
-        
-        # Disable force curriculum for initial training
-        enable_force_curriculum = False
+        # Use privileged (teacher) observations - same as g1_priv_mimic
+        # obs_type inherited from G1MimicPrivCfg.env
         
         # Episode settings - shorter episodes for faster iteration
         episode_length_s = 10
@@ -149,15 +128,18 @@ class G1TeleopCfg(G1MimicPrivCfg):
         action_buf_len = 6  # Slightly less delay
 
 
-class G1TeleopCfgPPO(HumanoidMimicCfgPPO):
-    """PPO training config for teleop motions."""
+class G1TeleopCfgPPO(G1MimicPrivCfgPPO):
+    """PPO training config for teleop motions.
+    
+    Uses OnPolicyRunnerMimic for pure RL training (no teacher distillation).
+    """
     
     seed = 1
     
-    class runner(HumanoidMimicCfgPPO.runner):
-        policy_class_name = 'ActorCriticFuture'
+    class runner(G1MimicPrivCfgPPO.runner):
+        policy_class_name = 'ActorCriticMimic'
         algorithm_class_name = 'PPO'
-        runner_class_name = 'OnPolicyRunner'
+        runner_class_name = 'OnPolicyRunnerMimic'
         max_iterations = 20001  # 20k iterations for initial training
         
         # Logging
@@ -169,12 +151,12 @@ class G1TeleopCfgPPO(HumanoidMimicCfgPPO):
         checkpoint = -1
         resume_path = None
     
-    class algorithm(HumanoidMimicCfgPPO.algorithm):
+    class algorithm(G1MimicPrivCfgPPO.algorithm):
         grad_penalty_coef_schedule = [0.00, 0.00, 700, 1000]
         std_schedule = [1.0, 0.4, 4000, 1500]
         entropy_coef = 0.005
     
-    class policy(HumanoidMimicCfgPPO.policy):
+    class policy(G1MimicPrivCfgPPO.policy):
         action_std = [0.7] * 12 + [0.4] * 3 + [0.5] * 14
         init_noise_std = 1.0
         obs_context_len = 11
@@ -183,21 +165,3 @@ class G1TeleopCfgPPO(HumanoidMimicCfgPPO):
         activation = 'silu'
         layer_norm = True
         motion_latent_dim = 128
-        
-        # Future motion encoder
-        future_encoder_dims = [256, 256, 128]
-        future_attention_heads = 4
-        future_dropout = 0.1
-        temporal_embedding_dim = 64
-        future_latent_dim = 128
-        num_future_steps = len(TAR_MOTION_STEPS_FUTURE)
-        
-        num_future_observations = G1TeleopCfg.env.n_future_obs
-        
-        # MoE parameters
-        num_experts = 4
-        expert_hidden_dims = [256, 128]
-        gating_hidden_dim = 128
-        moe_temperature = 1.0
-        moe_topk = None
-        load_balancing_loss_weight = 0.01
