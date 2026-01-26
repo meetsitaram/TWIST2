@@ -1,0 +1,47 @@
+# TWIST2 Motion Dataset Config
+# Generated from teleop episodes
+# Config: teleop_dataset
+
+root_path: /home/stickbot/projects/g1-pick-n-place/TWIST2/datasets/teleop_motions
+
+motions:
+  - file: baseline_001.pkl
+    weight: 1.0
+  - file: baseline_002.pkl
+    weight: 1.0
+  - file: elbow_track_001.pkl
+    weight: 1.0
+  - file: elbow_track_002.pkl
+    weight: 1.0
+  - file: elbow_track_003.pkl
+    weight: 1.0
+  - file: elbow_track_004.pkl
+    weight: 1.0
+  - file: elbow_track_005.pkl
+    weight: 1.0
+  - file: elbow_track_006.pkl
+    weight: 1.0
+  - file: elbow_track_007.pkl
+    weight: 1.0
+  - file: elbow_track_008.pkl
+    weight: 1.0
+  - file: hands_only_001.pkl
+    weight: 1.0
+  - file: smoothed_001.pkl
+    weight: 1.0
+  - file: smoothed_002.pkl
+    weight: 1.0
+  - file: smoothed_003.pkl
+    weight: 1.0
+  - file: smoothed_006.pkl
+    weight: 1.0
+  - file: smoothed_008.pkl
+    weight: 1.0
+  - file: smoothed_009.pkl
+    weight: 1.0
+  - file: smoothed_010.pkl
+    weight: 1.0
+  - file: smoothed_011.pkl
+    weight: 1.0
+  - file: wholebody_walk_001.pkl
+    weight: 1.0

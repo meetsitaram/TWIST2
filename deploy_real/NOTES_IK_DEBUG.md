@@ -828,3 +828,106 @@ Use TWIST2's motion imitation training:
 | `convert_episodes_to_motion.py` | NPZ → pickle converter (new) |
 | `motion_data_configs/teleop_dataset.yaml` | Training config (new) |
 | `stream_ik_teleop.py` | Use two-stage IK for recording |
+
+## Session Notes - Jan 26, 2026
+
+### Episode → Motion Converter (COMPLETED)
+
+Created `convert_episodes_to_motion.py` to convert teleop episode NPZ files to TWIST2 motion pickle format.
+
+**Usage:**
+```bash
+cd ~/projects/g1-pick-n-place/TWIST2/deploy_real
+conda activate gmr
+
+# List available episodes
+python convert_episodes_to_motion.py --list
+
+# Convert single episode
+python convert_episodes_to_motion.py --episode elbow_track_007
+
+# Convert all episodes + generate YAML config
+python convert_episodes_to_motion.py --all --yaml teleop_dataset
+```
+
+**Format Conversion:**
+```
+Episode NPZ (input):
+  - robot_qpos: (N, 36) = [x, y, z, qw, qx, qy, qz, 29_joints]
+  - Quaternion: scalar-first [qw, qx, qy, qz] (MuJoCo format)
+
+Motion PKL (output):
+  - fps: float
+  - root_pos: (N, 3)
+  - root_rot: (N, 4) = [qx, qy, qz, qw] (scalar-last, TWIST2 format)
+  - dof_pos: (N, 29)
+  - local_body_pos: (N, 38, 3) - FK body positions relative to pelvis
+  - link_body_list: list of 38 body names
+```
+
+**Key Implementation Details:**
+- Quaternion format conversion: MuJoCo uses [qw,qx,qy,qz], TWIST2 uses [qx,qy,qz,qw]
+- Forward kinematics computed via MuJoCo to get `local_body_pos`
+- 38 bodies from G1 model (excluding 'world')
+
+**Output:**
+- Motion files: `datasets/teleop_motions/*.pkl`
+- Training config: `motion_data_configs/teleop_dataset.yaml`
+- Total: 20 episodes, ~30,000 frames, ~17 minutes of motion data
+
+### Testing Converted Motions
+
+**Option 1: Kinematic Playback (no physics)**
+```bash
+cd ~/projects/g1-pick-n-place/TWIST2/deploy_real
+conda activate gmr
+
+python replay_motion.py --file ../datasets/teleop_motions/elbow_track_007.pkl --loop
+```
+
+**Option 2: Sim2Sim with Trained Policy (with physics)**
+
+Terminal 1 - Motion Server (gmr env):
+```bash
+conda activate gmr
+cd ~/projects/g1-pick-n-place/TWIST2/deploy_real
+
+python server_motion_lib.py \
+    --motion_file ../datasets/teleop_motions/elbow_track_007.pkl \
+    --robot unitree_g1_with_hands \
+    --vis \
+    --device cpu
+```
+
+Terminal 2 - Sim2Sim (twist2 env):
+```bash
+conda activate twist2
+cd ~/projects/g1-pick-n-place/TWIST2
+
+bash sim2sim.sh
+```
+
+### Dependency Fixes
+
+**scipy/numpy compatibility issue:**
+- scipy must be imported BEFORE matplotlib (numpy 2.x quirk)
+- Fixed import order in `server_motion_lib.py`
+- Added notes to `requirements_gmr.txt`
+
+**pose module installation:**
+- Installed as editable package: `cd TWIST2/pose && pip install -e .`
+- No longer need to set PYTHONPATH manually
+
+### Environment Summary
+
+| Environment | Purpose |
+|-------------|---------|
+| `gmr` | Motion capture, IK retargeting, motion conversion, motion server |
+| `twist2` | RL training, sim2sim, policy inference |
+
+### Next Steps
+
+1. [ ] Train new policy on teleop motion dataset
+2. [ ] Test policy tracking quality on custom motions
+3. [ ] Implement two-stage IK for better lower body tracking
+4. [ ] Record whole-body walking motions with lower body enabled

@@ -9,11 +9,14 @@ import numpy as np
 import torch
 from rich import print
 import os
+
+# IMPORTANT: scipy must be imported BEFORE matplotlib to avoid numpy 2.x compatibility issues
+from data_utils.rot_utils import euler_from_quaternion_torch, quat_rotate_inverse_torch
+
 import mujoco
 from mujoco.viewer import launch_passive
 import matplotlib.pyplot as plt
 from pose.utils.motion_lib_pkl import MotionLib
-from data_utils.rot_utils import euler_from_quaternion_torch, quat_rotate_inverse_torch
 
 from data_utils.params import DEFAULT_MIMIC_OBS
 
