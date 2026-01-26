@@ -6,12 +6,21 @@
 #   conda activate gmr
 #   pip install -r requirements_gmr.txt
 #   conda install -c conda-forge libstdcxx-ng -y
+#
+# IMPORTANT: numpy and scipy must be installed together to ensure binary compatibility.
+# If you see "No module named 'numpy._core.strings'" error, run:
+#   pip install --force-reinstall --no-cache-dir numpy scipy
+#
+# IMPORT ORDER: scipy must be imported BEFORE matplotlib in Python scripts.
+# This is due to a numpy 2.x compatibility issue. See server_motion_lib.py for example.
 
 # Phase 1: Multi-Camera Capture
 opencv-python>=4.8.0
 mediapipe==0.10.8  # Pin to 0.10.8 - last version with solutions API (0.10.9+ removed it)
-numpy>=1.24.0
-scipy>=1.10.0
+
+# Core numerical packages - pin compatible versions (numpy 2.x + scipy 1.15.x)
+numpy>=2.0.0,<3.0.0
+scipy>=1.15.0,<2.0.0
 
 # Phase 1: Calibration & Triangulation
 aniposelib>=0.4.3
