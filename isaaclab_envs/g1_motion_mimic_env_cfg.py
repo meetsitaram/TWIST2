@@ -191,10 +191,12 @@ class G1MotionMimicTerminations:
     )
     
     # Motion tracking failure (too far from target)
-    motion_tracking_failure = DoneTerm(
-        func=motion_mdp.motion_tracking_failure,
-        params={"threshold": 1.0},  # meters
-    )
+    # DISABLED: The motion data uses absolute world positions which don't match
+    # the robot's spawned position. Need to implement relative motion tracking.
+    # motion_tracking_failure = DoneTerm(
+    #     func=motion_mdp.motion_tracking_failure,
+    #     params={"threshold": 5.0},  # meters (relaxed for training)
+    # )
 
 
 ##############################################################################

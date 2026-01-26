@@ -91,11 +91,12 @@ def tracking_joint_dof(
 ) -> torch.Tensor:
     """Reward for tracking target joint positions.
     
-    Uses exponential kernel: exp(-||q - q_target||^2 / std^2)
+    Uses exponential kernel: exp(-mean_squared_error / std^2)
+    Note: Uses MEAN squared error (not sum) to normalize across different DOF counts.
     
     Args:
         env: The environment instance.
-        std: Standard deviation for exponential kernel.
+        std: Standard deviation for exponential kernel (per-joint scale).
     
     Returns:
         Reward tensor of shape (num_envs,)
@@ -111,8 +112,8 @@ def tracking_joint_dof(
     robot = env.scene["robot"]
     current_dof = robot.data.joint_pos
     
-    # Compute error
-    dof_error = torch.sum(torch.square(current_dof - target_dof), dim=1)
+    # Compute MEAN squared error (normalized by number of joints)
+    dof_error = torch.mean(torch.square(current_dof - target_dof), dim=1)
     
     return torch.exp(-dof_error / (std ** 2))
 
@@ -123,9 +124,11 @@ def tracking_joint_vel(
 ) -> torch.Tensor:
     """Reward for tracking target joint velocities.
     
+    Uses MEAN squared error to normalize across different DOF counts.
+    
     Args:
         env: The environment instance.
-        std: Standard deviation for exponential kernel.
+        std: Standard deviation for exponential kernel (per-joint scale).
     
     Returns:
         Reward tensor of shape (num_envs,)
@@ -140,7 +143,8 @@ def tracking_joint_vel(
     robot = env.scene["robot"]
     current_vel = robot.data.joint_vel
     
-    vel_error = torch.sum(torch.square(current_vel - target_vel), dim=1)
+    # Compute MEAN squared error (normalized by number of joints)
+    vel_error = torch.mean(torch.square(current_vel - target_vel), dim=1)
     
     return torch.exp(-vel_error / (std ** 2))
 
@@ -201,8 +205,8 @@ def tracking_keybody_pos(
     current_pos = current_pos[:, :num_compare, :]
     target_pos = target_pos[:, :num_compare, :]
     
-    # Compute position error
-    pos_error = torch.sum(torch.norm(current_pos - target_pos, dim=-1), dim=1)
+    # Compute MEAN position error (normalized by number of key bodies)
+    pos_error = torch.mean(torch.norm(current_pos - target_pos, dim=-1), dim=1)
     
     return torch.exp(-pos_error / std)
 

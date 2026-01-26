@@ -3,6 +3,7 @@
 #
 # Loads and samples motion data from pkl files for motion imitation.
 # Adapted from TWIST2's pose/utils/motion_lib_pkl.py for Isaac Lab.
+# OPTIMIZED: Vectorized operations for GPU-efficient batch processing.
 
 from __future__ import annotations
 
@@ -36,6 +37,9 @@ class MotionLib:
     Loads motion data from pkl files and provides methods to sample
     motion states at arbitrary times.
     
+    OPTIMIZED: All motion data is stacked into padded tensors at load time
+    for vectorized GPU operations. No Python for-loops during get_motion_state().
+    
     Motion pkl format:
         - fps: frames per second
         - root_pos: (num_frames, 3) root position
@@ -60,13 +64,19 @@ class MotionLib:
         self.device = device
         self.key_bodies = key_bodies or []
         
-        # Load motions
-        self._motion_data = []
+        # Load motions into lists first
+        self._motion_data_list = []
         self._motion_lengths = []
         self._motion_fps = []
         self._motion_weights = []
         
         self._load_motions(motion_file)
+        
+        # Compute key body indices once (before stacking)
+        self._key_body_indices = self.get_key_body_indices(self.key_bodies) if self.key_bodies else []
+        
+        # Stack all motion data into padded tensors for vectorized access
+        self._build_stacked_tensors()
         
         # Compute sampling weights
         total_length = sum(self._motion_lengths)
@@ -76,13 +86,67 @@ class MotionLib:
         )
         self._motion_probs /= self._motion_probs.sum()
         
-        # Compute key body indices once
-        self._key_body_indices = self.get_key_body_indices(self.key_bodies) if self.key_bodies else []
-        
-        print(f"[MotionLib] Loaded {len(self._motion_data)} motions, "
+        print(f"[MotionLib] Loaded {self.num_motions} motions, "
               f"total length: {total_length:.1f}s")
         if self._key_body_indices:
             print(f"[MotionLib] Key body indices: {self._key_body_indices}")
+    
+    def _build_stacked_tensors(self):
+        """Stack all motion data into padded tensors for vectorized access."""
+        num_motions = len(self._motion_data_list)
+        
+        # Find max frames across all motions
+        max_frames = max(m["dof_pos"].shape[0] for m in self._motion_data_list)
+        num_joints = self._motion_data_list[0]["dof_pos"].shape[1]
+        
+        # Check if we have key body data
+        has_keybody = "local_body_pos" in self._motion_data_list[0] and self._key_body_indices
+        num_key_bodies = len(self._key_body_indices) if has_keybody else len(self.key_bodies) if self.key_bodies else 1
+        
+        # Pre-allocate stacked tensors (num_motions, max_frames, ...)
+        self._stacked_dof_pos = torch.zeros(num_motions, max_frames, num_joints, device=self.device)
+        self._stacked_dof_vel = torch.zeros(num_motions, max_frames, num_joints, device=self.device)
+        self._stacked_root_pos = torch.zeros(num_motions, max_frames, 3, device=self.device)
+        self._stacked_root_rot = torch.zeros(num_motions, max_frames, 4, device=self.device)
+        self._stacked_keybody_pos = torch.zeros(num_motions, max_frames, num_key_bodies, 3, device=self.device)
+        
+        # Store frame counts and fps as tensors for vectorized ops
+        self._motion_num_frames = torch.zeros(num_motions, dtype=torch.long, device=self.device)
+        self._motion_fps_tensor = torch.zeros(num_motions, device=self.device)
+        self._motion_lengths_tensor = torch.zeros(num_motions, device=self.device)
+        
+        # Fill stacked tensors
+        for i, motion in enumerate(self._motion_data_list):
+            num_frames = motion["dof_pos"].shape[0]
+            self._motion_num_frames[i] = num_frames
+            self._motion_fps_tensor[i] = self._motion_fps[i]
+            self._motion_lengths_tensor[i] = self._motion_lengths[i]
+            
+            # Copy data (padded with last frame for safety)
+            self._stacked_dof_pos[i, :num_frames] = motion["dof_pos"]
+            self._stacked_dof_vel[i, :num_frames] = motion["dof_vel"]
+            self._stacked_root_pos[i, :num_frames] = motion["root_pos"]
+            self._stacked_root_rot[i, :num_frames] = motion["root_rot"]
+            
+            # Pad with last frame to avoid index errors
+            if num_frames < max_frames:
+                self._stacked_dof_pos[i, num_frames:] = motion["dof_pos"][-1]
+                self._stacked_dof_vel[i, num_frames:] = motion["dof_vel"][-1]
+                self._stacked_root_pos[i, num_frames:] = motion["root_pos"][-1]
+                self._stacked_root_rot[i, num_frames:] = motion["root_rot"][-1]
+            
+            # Key body positions
+            if has_keybody:
+                keybody_data = motion["local_body_pos"][:, self._key_body_indices, :]
+                self._stacked_keybody_pos[i, :num_frames] = keybody_data
+                if num_frames < max_frames:
+                    self._stacked_keybody_pos[i, num_frames:] = keybody_data[-1]
+        
+        # Clear the list to free memory
+        self._motion_data_list = None
+        self._has_keybody = has_keybody
+        self._num_joints = num_joints
+        self._num_key_bodies = num_key_bodies
     
     def _load_motions(self, motion_file: str):
         """Load motions from YAML config or pkl file."""
@@ -146,7 +210,7 @@ class MotionLib:
         dof_vel[0] = dof_vel[1]
         motion_data["dof_vel"] = dof_vel
         
-        self._motion_data.append(motion_data)
+        self._motion_data_list.append(motion_data)
         self._motion_lengths.append(duration)
         self._motion_fps.append(fps)
         self._motion_weights.append(weight)
@@ -160,10 +224,10 @@ class MotionLib:
         Returns:
             List of body indices in local_body_pos.
         """
-        if not self._motion_data or "body_names" not in self._motion_data[0]:
+        if not self._motion_data_list or "body_names" not in self._motion_data_list[0]:
             return list(range(len(key_body_names)))
         
-        body_names = self._motion_data[0]["body_names"]
+        body_names = self._motion_data_list[0]["body_names"]
         indices = []
         for name in key_body_names:
             if name in body_names:
@@ -175,7 +239,7 @@ class MotionLib:
     @property
     def num_motions(self) -> int:
         """Number of loaded motions."""
-        return len(self._motion_data)
+        return len(self._motion_lengths)
     
     def sample_motions(self, num_samples: int) -> torch.Tensor:
         """Sample motion indices based on weights.
@@ -194,7 +258,7 @@ class MotionLib:
         return indices
     
     def sample_start_times(self, motion_ids: torch.Tensor) -> torch.Tensor:
-        """Sample random start times for given motions.
+        """Sample random start times for given motions (VECTORIZED).
         
         Args:
             motion_ids: Tensor of motion indices.
@@ -202,12 +266,11 @@ class MotionLib:
         Returns:
             Tensor of shape (num_samples,) with start times.
         """
-        num_samples = motion_ids.shape[0]
-        start_times = torch.zeros(num_samples, device=self.device)
+        # Get durations for each motion_id (vectorized lookup)
+        durations = self._motion_lengths_tensor[motion_ids]
         
-        for i, motion_id in enumerate(motion_ids):
-            duration = self._motion_lengths[motion_id.item()]
-            start_times[i] = torch.rand(1, device=self.device).item() * duration
+        # Sample random times within duration
+        start_times = torch.rand(motion_ids.shape[0], device=self.device) * durations
         
         return start_times
     
@@ -216,7 +279,7 @@ class MotionLib:
         motion_ids: torch.Tensor,
         times: torch.Tensor,
     ) -> Dict[str, torch.Tensor]:
-        """Get motion state at specified times.
+        """Get motion state at specified times (FULLY VECTORIZED).
         
         Args:
             motion_ids: Tensor of motion indices, shape (num_envs,).
@@ -232,76 +295,56 @@ class MotionLib:
         """
         num_envs = motion_ids.shape[0]
         
-        # Get number of joints from first motion
-        num_joints = self._motion_data[0]["dof_pos"].shape[1]
+        # Get fps and duration for each environment's motion (vectorized)
+        fps = self._motion_fps_tensor[motion_ids]  # (num_envs,)
+        durations = self._motion_lengths_tensor[motion_ids]  # (num_envs,)
+        num_frames = self._motion_num_frames[motion_ids]  # (num_envs,)
         
-        # Initialize output tensors
-        dof_pos = torch.zeros(num_envs, num_joints, device=self.device)
-        dof_vel = torch.zeros(num_envs, num_joints, device=self.device)
-        root_pos = torch.zeros(num_envs, 3, device=self.device)
-        root_rot = torch.zeros(num_envs, 4, device=self.device)
+        # Wrap time to motion duration
+        wrapped_times = times % durations  # (num_envs,)
         
-        # Process each environment
-        for i in range(num_envs):
-            motion_id = motion_ids[i].item()
-            time = times[i].item()
-            
-            motion = self._motion_data[motion_id]
-            fps = self._motion_fps[motion_id]
-            duration = self._motion_lengths[motion_id]
-            
-            # Wrap time to motion duration
-            time = time % duration
-            
-            # Compute frame index with linear interpolation
-            frame_f = time * fps
-            frame_0 = int(frame_f)
-            frame_1 = min(frame_0 + 1, motion["dof_pos"].shape[0] - 1)
-            blend = frame_f - frame_0
-            
-            # Interpolate state
-            dof_pos[i] = (1 - blend) * motion["dof_pos"][frame_0] + blend * motion["dof_pos"][frame_1]
-            dof_vel[i] = (1 - blend) * motion["dof_vel"][frame_0] + blend * motion["dof_vel"][frame_1]
-            root_pos[i] = (1 - blend) * motion["root_pos"][frame_0] + blend * motion["root_pos"][frame_1]
-            
-            # Quaternion SLERP (simplified - linear interpolation then normalize)
-            rot_0 = motion["root_rot"][frame_0]
-            rot_1 = motion["root_rot"][frame_1]
-            # Handle quaternion sign
-            if torch.dot(rot_0, rot_1) < 0:
-                rot_1 = -rot_1
-            root_rot[i] = (1 - blend) * rot_0 + blend * rot_1
-            root_rot[i] = root_rot[i] / torch.norm(root_rot[i])
+        # Compute frame indices with linear interpolation
+        frame_f = wrapped_times * fps  # (num_envs,)
+        frame_0 = frame_f.long()  # (num_envs,)
         
-        # Key body positions (if available)
-        if "local_body_pos" in self._motion_data[0] and self._key_body_indices:
-            num_key_bodies = len(self._key_body_indices)
-            keybody_pos = torch.zeros(num_envs, num_key_bodies, 3, device=self.device)
-            
-            for i in range(num_envs):
-                motion_id = motion_ids[i].item()
-                time = times[i].item() % self._motion_lengths[motion_id]
-                
-                motion = self._motion_data[motion_id]
-                fps = self._motion_fps[motion_id]
-                
-                frame_f = time * fps
-                frame_0 = int(frame_f)
-                frame_1 = min(frame_0 + 1, motion["local_body_pos"].shape[0] - 1)
-                blend = frame_f - frame_0
-                
-                # Get all body positions at this frame
-                all_body_pos_0 = motion["local_body_pos"][frame_0]
-                all_body_pos_1 = motion["local_body_pos"][frame_1]
-                
-                # Extract only key body positions
-                for j, body_idx in enumerate(self._key_body_indices):
-                    keybody_pos[i, j] = (1 - blend) * all_body_pos_0[body_idx] + \
-                                        blend * all_body_pos_1[body_idx]
-        else:
-            # No key bodies or no body data - return zeros
-            num_key_bodies = len(self.key_bodies) if self.key_bodies else 1
-            keybody_pos = torch.zeros(num_envs, num_key_bodies, 3, device=self.device)
+        # Clamp frame indices to valid range (use torch.minimum/maximum for tensor bounds)
+        max_frame = num_frames - 1  # (num_envs,) tensor
+        frame_0 = torch.clamp(frame_0, min=0)  # Lower bound with scalar
+        frame_0 = torch.minimum(frame_0, max_frame)  # Upper bound with tensor
+        frame_1 = torch.minimum(frame_0 + 1, max_frame)  # (num_envs,)
+        
+        blend = (frame_f - frame_0.float()).unsqueeze(-1)  # (num_envs, 1)
+        
+        # Advanced indexing to get all data at once
+        # Index: [motion_id, frame] for each env
+        dof_pos_0 = self._stacked_dof_pos[motion_ids, frame_0]  # (num_envs, num_joints)
+        dof_pos_1 = self._stacked_dof_pos[motion_ids, frame_1]
+        dof_pos = (1 - blend) * dof_pos_0 + blend * dof_pos_1
+        
+        dof_vel_0 = self._stacked_dof_vel[motion_ids, frame_0]
+        dof_vel_1 = self._stacked_dof_vel[motion_ids, frame_1]
+        dof_vel = (1 - blend) * dof_vel_0 + blend * dof_vel_1
+        
+        root_pos_0 = self._stacked_root_pos[motion_ids, frame_0]  # (num_envs, 3)
+        root_pos_1 = self._stacked_root_pos[motion_ids, frame_1]
+        root_pos = (1 - blend) * root_pos_0 + blend * root_pos_1
+        
+        # Quaternion interpolation (linear + normalize)
+        rot_0 = self._stacked_root_rot[motion_ids, frame_0]  # (num_envs, 4)
+        rot_1 = self._stacked_root_rot[motion_ids, frame_1]
+        
+        # Handle quaternion sign (dot product check, vectorized)
+        dot = (rot_0 * rot_1).sum(dim=-1, keepdim=True)  # (num_envs, 1)
+        rot_1 = torch.where(dot < 0, -rot_1, rot_1)
+        
+        root_rot = (1 - blend) * rot_0 + blend * rot_1
+        root_rot = root_rot / root_rot.norm(dim=-1, keepdim=True)  # Normalize
+        
+        # Key body positions
+        blend_3d = blend.unsqueeze(-1)  # (num_envs, 1, 1)
+        keybody_pos_0 = self._stacked_keybody_pos[motion_ids, frame_0]  # (num_envs, num_key_bodies, 3)
+        keybody_pos_1 = self._stacked_keybody_pos[motion_ids, frame_1]
+        keybody_pos = (1 - blend_3d) * keybody_pos_0 + blend_3d * keybody_pos_1
         
         return {
             "dof_pos": dof_pos,
