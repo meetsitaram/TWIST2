@@ -324,17 +324,127 @@ class G1MotionMimicEnvCfg_ROBUST(G1MotionMimicEnvCfg):
         self.events.push_robot = EventTermCfg(
             func=mdp_events.push_by_setting_velocity,
             mode="interval",
-            interval_range_s=(8.0, 12.0),  # Push every 8-12 seconds
+            interval_range_s=(6.0, 10.0),  # Push every 6-10 seconds (more frequent)
             params={
                 "velocity_range": {
-                    "x": (-0.8, 0.8),  # Stronger than default
-                    "y": (-0.8, 0.8),
+                    "x": (-1.2, 1.2),  # Stronger pushes for stable robot
+                    "y": (-1.2, 1.2),
                 }
             },
         )
         
         # Optionally enable mass randomization for extra robustness
         # self.events.add_base_mass = EventTermCfg(...)
+
+
+##############################################################################
+# STAGE 3: UPPER BODY JOINT TRACKING
+##############################################################################
+
+@configclass
+class G1MotionMimicRewards_STAGE3(G1MotionMimicRewards):
+    """Stage 3: Upper body manipulation via joint angle tracking.
+    
+    The teleop dataset contains the robot's joint angles directly (dof_pos),
+    so we use joint tracking as the primary reward. This is more direct than
+    end-effector position tracking and doesn't require FK computation.
+    
+    Key differences from Stage 1:
+    - Higher weight on joint tracking (primary objective)
+    - Separate arm joint tracking with tighter precision
+    - Upper body stability reward (keep torso stable)
+    - Reduced lower body tracking weight (allow balance adaptation)
+    """
+    
+    # === PRIMARY: JOINT ANGLE TRACKING ===
+    
+    # Overall joint tracking (all 29 DOFs)
+    tracking_joint_dof = RewTerm(
+        func=motion_mdp.tracking_joint_dof,
+        weight=3.0,  # Increased from 2.0 - primary objective
+        params={"std": 0.4},  # Tighter than Stage 1
+    )
+    
+    # Arm joints tracking with higher weight
+    # (shoulders, elbows, wrists - indices 13-28 on G1)
+    tracking_arm_joints = RewTerm(
+        func=motion_mdp.tracking_arm_joints,
+        weight=4.0,  # High weight for arms specifically
+        params={
+            "std": 0.3,  # Tighter precision for arms
+        },
+    )
+    
+    # === STABILITY: KEEP BALANCE WHILE ARMS MOVE ===
+    
+    # Upper body stability (keep torso stable during manipulation)
+    upper_body_stability = RewTerm(
+        func=motion_mdp.upper_body_stability,
+        weight=1.5,
+        params={"asset_cfg": SceneEntityCfg("robot")},
+    )
+    
+    # Keep height tracking to prevent crouching/rising
+    tracking_root_height = RewTerm(
+        func=motion_mdp.tracking_root_height,
+        weight=2.0,  # Important for manipulation
+        params={"std": 0.1},
+    )
+    
+    # === REDUCED: LOWER BODY TRACKING (let it adapt for balance) ===
+    
+    # Reduce weight on root XY tracking - upper body is priority
+    tracking_root_pos_xy = RewTerm(
+        func=motion_mdp.tracking_root_pos_xy,
+        weight=0.5,  # Reduced from 2.0 - allow drift for balance
+        params={"std": 0.5},  # More lenient
+    )
+    
+    # Disable EE tracking (not working, use joint tracking instead)
+    tracking_ee_pos = None
+    ee_velocity_direction = None
+
+
+@configclass
+class G1MotionMimicEnvCfg_STAGE3(G1MotionMimicEnvCfg):
+    """Stage 3: Upper body end-effector tracking for manipulation.
+    
+    Builds on Stage 1/2 with precise end-effector position tracking.
+    Uses teleop motion data that focuses on upper body movements.
+    
+    Key features:
+    - Primary reward on hand position accuracy
+    - Temporal tolerance for motion matching (~50ms window)
+    - Balance rewards maintained to prevent falling
+    - Velocity direction reward for smoother learning
+    
+    Usage:
+        python scripts/train_isaaclab.py \
+            --motion_file motion_data_configs/upper_body_teleop.yaml \
+            --checkpoint logs/isaaclab/motion_mimic/model_STAGE2.pt \
+            --num_envs 4096 --max_iterations 30000 --headless
+    """
+    
+    # Override rewards with Stage 3 rewards
+    rewards: G1MotionMimicRewards_STAGE3 = G1MotionMimicRewards_STAGE3()
+    
+    def __post_init__(self):
+        super().__post_init__()
+        
+        # Episode settings for manipulation training
+        self.episode_length_s = 15.0  # Longer episodes for manipulation sequences
+        
+        # IMPORTANT: Do NOT override key_bodies here!
+        # We must keep the same observation space as Stage 1 to load checkpoints.
+        # The EE tracking rewards (tracking_ee_pos, ee_velocity_direction) use
+        # robot body names directly, independent of key_bodies.
+        #
+        # Inherited key_bodies from Stage 1:
+        # - feet (2), elbows (2), shoulders (2), torso (1) = 7 bodies
+        
+        # Disable push disturbances during Stage 3
+        # (re-enable for Stage 4 robust manipulation if needed)
+        self.events.push_robot = None
 
 
 @configclass

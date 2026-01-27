@@ -123,6 +123,10 @@ parser.add_argument("--checkpoint", type=str, default=None,
 parser.add_argument("--robust", action="store_true",
                     help="Enable robustness training with push disturbances (use with --checkpoint)")
 
+# Stage 3: Upper body end-effector tracking
+parser.add_argument("--stage3", action="store_true",
+                    help="Stage 3: Upper body manipulation with EE tracking (use with --checkpoint)")
+
 # AppLauncher args (adds --headless, --video, etc.)
 AppLauncher.add_app_launcher_args(parser)
 
@@ -146,7 +150,11 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper
 
 # Import our custom environment (registers gym tasks)
 import isaaclab_envs
-from isaaclab_envs.g1_motion_mimic_env_cfg import G1MotionMimicEnvCfg, G1MotionMimicEnvCfg_ROBUST
+from isaaclab_envs.g1_motion_mimic_env_cfg import (
+    G1MotionMimicEnvCfg, 
+    G1MotionMimicEnvCfg_ROBUST,
+    G1MotionMimicEnvCfg_STAGE3,
+)
 from isaaclab_envs.agents.rsl_rl_ppo_cfg import G1MotionMimicPPORunnerCfg
 
 # RSL-RL imports
@@ -165,7 +173,10 @@ def main():
     
     try:
         # Create environment config
-        if args.robust:
+        if args.stage3:
+            print("[Train] STAGE 3: Upper body end-effector tracking")
+            env_cfg = G1MotionMimicEnvCfg_STAGE3()
+        elif args.robust:
             print("[Train] ROBUSTNESS MODE: Push disturbances ENABLED")
             env_cfg = G1MotionMimicEnvCfg_ROBUST()
         else:

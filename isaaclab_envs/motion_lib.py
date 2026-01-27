@@ -48,11 +48,15 @@ class MotionLib:
         - local_body_pos: (num_frames, num_bodies, 3) body positions (optional)
     """
     
+    # Default end-effector bodies for manipulation (wrists)
+    DEFAULT_EE_BODIES = ["left_wrist_yaw_link", "right_wrist_yaw_link"]
+    
     def __init__(
         self,
         motion_file: str,
         device: str = "cuda:0",
         key_bodies: Optional[List[str]] = None,
+        ee_bodies: Optional[List[str]] = None,
     ):
         """Initialize motion library.
         
@@ -60,9 +64,11 @@ class MotionLib:
             motion_file: Path to motion YAML config or single pkl file.
             device: Torch device for tensors.
             key_bodies: List of key body names for tracking.
+            ee_bodies: List of end-effector body names (default: wrists).
         """
         self.device = device
         self.key_bodies = key_bodies or []
+        self.ee_bodies = ee_bodies or self.DEFAULT_EE_BODIES
         
         # Load motions into lists first
         self._motion_data_list = []
@@ -74,6 +80,9 @@ class MotionLib:
         
         # Compute key body indices once (before stacking)
         self._key_body_indices = self.get_key_body_indices(self.key_bodies) if self.key_bodies else []
+        
+        # Compute EE body indices
+        self._ee_body_indices = self.get_key_body_indices(self.ee_bodies) if self.ee_bodies else []
         
         # Stack all motion data into padded tensors for vectorized access
         self._build_stacked_tensors()
@@ -90,6 +99,8 @@ class MotionLib:
               f"total length: {total_length:.1f}s")
         if self._key_body_indices:
             print(f"[MotionLib] Key body indices: {self._key_body_indices}")
+        if self._ee_body_indices:
+            print(f"[MotionLib] EE body indices: {self._ee_body_indices}")
     
     def _build_stacked_tensors(self):
         """Stack all motion data into padded tensors for vectorized access."""
@@ -103,12 +114,17 @@ class MotionLib:
         has_keybody = "local_body_pos" in self._motion_data_list[0] and self._key_body_indices
         num_key_bodies = len(self._key_body_indices) if has_keybody else len(self.key_bodies) if self.key_bodies else 1
         
+        # Check if we have EE body data
+        has_ee = "local_body_pos" in self._motion_data_list[0] and self._ee_body_indices
+        num_ee_bodies = len(self._ee_body_indices) if has_ee else len(self.ee_bodies) if self.ee_bodies else 2
+        
         # Pre-allocate stacked tensors (num_motions, max_frames, ...)
         self._stacked_dof_pos = torch.zeros(num_motions, max_frames, num_joints, device=self.device)
         self._stacked_dof_vel = torch.zeros(num_motions, max_frames, num_joints, device=self.device)
         self._stacked_root_pos = torch.zeros(num_motions, max_frames, 3, device=self.device)
         self._stacked_root_rot = torch.zeros(num_motions, max_frames, 4, device=self.device)
         self._stacked_keybody_pos = torch.zeros(num_motions, max_frames, num_key_bodies, 3, device=self.device)
+        self._stacked_ee_pos = torch.zeros(num_motions, max_frames, num_ee_bodies, 3, device=self.device)
         
         # Store frame counts and fps as tensors for vectorized ops
         self._motion_num_frames = torch.zeros(num_motions, dtype=torch.long, device=self.device)
@@ -149,11 +165,13 @@ class MotionLib:
         self._num_key_bodies = num_key_bodies
     
     def _load_motions(self, motion_file: str):
-        """Load motions from YAML config or pkl file."""
+        """Load motions from YAML config, pkl file, or npz file."""
         if motion_file.endswith(".yaml"):
             self._load_from_yaml(motion_file)
         elif motion_file.endswith(".pkl"):
             self._load_single_motion(motion_file, weight=1.0)
+        elif motion_file.endswith(".npz"):
+            self._load_single_motion_npz(motion_file, weight=1.0)
         else:
             raise ValueError(f"Unsupported motion file format: {motion_file}")
     
@@ -202,6 +220,51 @@ class MotionLib:
         # Store body link list for key body lookup
         if "link_body_list" in motion:
             motion_data["body_names"] = motion["link_body_list"]
+        
+        # Compute joint velocities via finite difference
+        dt = 1.0 / fps
+        dof_vel = torch.zeros_like(motion_data["dof_pos"])
+        dof_vel[1:] = (motion_data["dof_pos"][1:] - motion_data["dof_pos"][:-1]) / dt
+        dof_vel[0] = dof_vel[1]
+        motion_data["dof_vel"] = dof_vel
+        
+        self._motion_data_list.append(motion_data)
+        self._motion_lengths.append(duration)
+        self._motion_fps.append(fps)
+        self._motion_weights.append(weight)
+    
+    def _load_single_motion_npz(self, npz_path: str, weight: float):
+        """Load a single motion from npz file (numpy 1.x compatible)."""
+        import numpy as np
+        
+        npz = np.load(npz_path, allow_pickle=True)
+        
+        # Extract fps from metadata
+        fps = float(npz.get("_meta_fps", [50.0])[0])
+        num_frames = npz["dof_pos"].shape[0]
+        duration = num_frames / fps
+        
+        # Convert to torch tensors
+        motion_data = {
+            "fps": fps,
+            "root_pos": torch.tensor(npz["root_pos"], dtype=torch.float32, device=self.device),
+            "root_rot": torch.tensor(npz["root_rot"], dtype=torch.float32, device=self.device),
+            "dof_pos": torch.tensor(npz["dof_pos"], dtype=torch.float32, device=self.device),
+        }
+        
+        # Load local body positions if available
+        if "local_body_pos" in npz:
+            motion_data["local_body_pos"] = torch.tensor(
+                npz["local_body_pos"], dtype=torch.float32, device=self.device
+            )
+        
+        # Store body link list for key body lookup
+        if "link_body_list" in npz:
+            # NPZ stores arrays, so convert back to list
+            body_list = npz["link_body_list"]
+            if hasattr(body_list, 'tolist'):
+                body_list = body_list.tolist()
+            motion_data["body_names"] = body_list
         
         # Compute joint velocities via finite difference
         dt = 1.0 / fps

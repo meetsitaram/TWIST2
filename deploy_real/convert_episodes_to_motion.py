@@ -310,8 +310,22 @@ def main():
         '--model', '-m', type=str,
         help='Path to G1 MuJoCo model XML'
     )
+    parser.add_argument(
+        '--subdir', '-s', type=str,
+        help='Subdirectory within teleop_episodes (e.g., stage3_upper_body)'
+    )
     
     args = parser.parse_args()
+    
+    # Update paths if subdir specified
+    global EPISODES_DIR, MOTION_OUTPUT_DIR
+    if args.subdir:
+        EPISODES_DIR = TWIST2_ROOT / "datasets" / "teleop_episodes" / args.subdir
+        MOTION_OUTPUT_DIR = TWIST2_ROOT / "datasets" / "teleop_motions" / args.subdir
+        MOTION_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        print(f"Using subdirectory: {args.subdir}")
+        print(f"  Episodes: {EPISODES_DIR}")
+        print(f"  Output:   {MOTION_OUTPUT_DIR}")
     
     # List episodes
     if args.list:

@@ -698,13 +698,13 @@ Examples:
                        help="Record/show video (for record or replay)")
     
     # Smoothing options
-    parser.add_argument("--smoothing", type=str, default="none",
+    parser.add_argument("--smoothing", type=str, default="one_euro",
                        choices=["none", "one_euro"],
-                       help="Skeleton smoothing method (default: none)")
-    parser.add_argument("--smooth-cutoff", type=float, default=1.0,
-                       help="One Euro min_cutoff - lower = smoother (default: 1.0)")
-    parser.add_argument("--smooth-beta", type=float, default=0.007,
-                       help="One Euro beta - higher = more responsive (default: 0.007)")
+                       help="Skeleton smoothing method (default: one_euro)")
+    parser.add_argument("--smooth-cutoff", type=float, default=0.8,
+                       help="One Euro min_cutoff - lower = smoother (default: 0.8)")
+    parser.add_argument("--smooth-beta", type=float, default=0.01,
+                       help="One Euro beta - higher = more responsive (default: 0.01)")
     
     # IK mode options
     parser.add_argument("--two-stage", "-2", action="store_true",

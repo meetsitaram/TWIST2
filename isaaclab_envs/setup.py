@@ -11,5 +11,6 @@ setup(
         "torch",
         "numpy",
         "pyyaml",
+        "redis",  # For live teleop streaming
     ],
 )

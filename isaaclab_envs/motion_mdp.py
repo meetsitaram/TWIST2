@@ -20,11 +20,17 @@ if TYPE_CHECKING:
 # MOTION TARGET STATE ACCESS
 ##############################################################################
 
-def get_target_state(env: ManagerBasedRLEnv):
+def get_target_state(env: ManagerBasedRLEnv, frame_offset: int = 0):
     """Get current target state from motion library.
     
     Uses the environment's get_target_state() method which handles
     motion timing and interpolation.
+    
+    Args:
+        env: The environment instance.
+        frame_offset: Optional frame offset for temporal windowing.
+                      Positive = future frames, Negative = past frames.
+                      At 30fps, ±2 frames = ±66ms.
     
     Returns dict with:
         - dof_pos: target joint positions
@@ -33,7 +39,7 @@ def get_target_state(env: ManagerBasedRLEnv):
         - root_rot: target root rotation (quaternion)
         - keybody_pos: target key body positions
     """
-    return env.get_target_state()
+    return env.get_target_state(frame_offset=frame_offset)
 
 
 ##############################################################################
@@ -344,6 +350,316 @@ def feet_distance_penalty(
     penalty = too_close + too_far
     
     return penalty
+
+
+##############################################################################
+# STAGE 3: ARM JOINT TRACKING REWARDS
+##############################################################################
+
+# G1 motion data joint indices (MuJoCo format, 0-indexed):
+# Left leg: 0-5 (hip_pitch, hip_roll, hip_yaw, knee, ankle_pitch, ankle_roll)
+# Right leg: 6-11
+# Waist/torso: 12-14 (waist_yaw, waist_roll, waist_pitch)
+# Left arm: 15-21 (shoulder_pitch, shoulder_roll, shoulder_yaw, elbow, wrist_roll, wrist_pitch, wrist_yaw)
+# Right arm: 22-28
+#
+# For arm tracking, use indices 15-21 (left) and 22-28 (right)
+G1_ARM_JOINT_INDICES = list(range(15, 22)) + list(range(22, 29))  # All arm joints
+G1_LEFT_ARM_INDICES = list(range(15, 22))   # Left arm only
+G1_RIGHT_ARM_INDICES = list(range(22, 29))  # Right arm only
+
+
+def tracking_arm_joints(
+    env: ManagerBasedRLEnv,
+    std: float = 0.3,
+) -> torch.Tensor:
+    """Reward for tracking arm joint angles specifically.
+    
+    Focuses on upper body arm joints (shoulders, elbows, wrists) for
+    manipulation tasks. Uses tighter precision than full body tracking.
+    
+    Args:
+        env: The environment instance.
+        std: Standard deviation for exponential kernel (radians).
+    
+    Returns:
+        Reward tensor of shape (num_envs,)
+    """
+    # Skip if motion not initialized
+    if not hasattr(env, '_motion_initialized') or not env._motion_initialized:
+        return torch.zeros(env.num_envs, device=env.device)
+    
+    target_state = get_target_state(env)
+    target_dof = target_state["dof_pos"]
+    
+    robot = env.scene["robot"]
+    current_dof = robot.data.joint_pos
+    
+    # Get arm joint indices (clamp to available joints)
+    num_joints = min(current_dof.shape[1], target_dof.shape[1])
+    arm_indices = [i for i in G1_ARM_JOINT_INDICES if i < num_joints]
+    
+    if not arm_indices:
+        return torch.zeros(env.num_envs, device=env.device)
+    
+    # Extract arm joints only
+    current_arm = current_dof[:, arm_indices]
+    target_arm = target_dof[:, arm_indices]
+    
+    # Compute MEAN squared error for arm joints
+    arm_error = torch.mean(torch.square(current_arm - target_arm), dim=1)
+    
+    return torch.exp(-arm_error / (std ** 2))
+
+
+##############################################################################
+# STAGE 3: END-EFFECTOR TRACKING REWARDS (kept for reference)
+##############################################################################
+
+def tracking_ee_pos_windowed(
+    env: ManagerBasedRLEnv,
+    ee_bodies: list[str],
+    std: float = 0.03,
+    window_frames: int = 2,
+) -> torch.Tensor:
+    """End-effector position tracking with temporal window tolerance.
+    
+    Instead of requiring exact frame-by-frame matching, allows the robot
+    to match any target within a ±window_frames time window (~66ms at 30fps).
+    
+    This addresses the reality that:
+    1. Physics simulation timing differs from recorded motion
+    2. Robot dynamics may cause phase shifts  
+    3. ~50ms tolerance is acceptable for manipulation tasks
+    
+    Args:
+        env: The environment instance.
+        ee_bodies: List of end-effector body names (e.g., wrist links).
+        std: Standard deviation for exponential kernel (meters).
+              3cm = precise manipulation, 5cm = general reaching.
+        window_frames: Number of frames to search ±around current time.
+    
+    Returns:
+        Reward tensor of shape (num_envs,)
+    """
+    # Skip if motion not initialized
+    if not hasattr(env, '_motion_initialized') or not env._motion_initialized:
+        return torch.zeros(env.num_envs, device=env.device)
+    
+    robot = env.scene["robot"]
+    
+    # Get EE body indices
+    ee_ids = []
+    for body_name in ee_bodies:
+        try:
+            found = robot.find_bodies(body_name)[0]
+            if found:
+                ee_ids.extend(found)
+        except ValueError:
+            pass
+    
+    if not ee_ids:
+        return torch.zeros(env.num_envs, device=env.device)
+    
+    # Current end-effector positions (num_envs, num_ee, 3)
+    current_ee_pos = robot.data.body_pos_w[:, ee_ids, :]
+    
+    # Get target positions - search within time window for best match
+    # This allows temporal flexibility (~50ms window)
+    best_error = None
+    
+    for offset in range(-window_frames, window_frames + 1):
+        # Get target state at this time offset
+        target_state = env.get_target_state(frame_offset=offset)
+        
+        # Extract EE positions from keybody_pos
+        # We need the wrist positions which should be in local_body_pos
+        # For now, use the target keybody positions
+        target_keybody = target_state["keybody_pos"]  # (num_envs, num_bodies, 3)
+        
+        # Match EE positions - take the hand-related indices
+        # Assuming hands are at specific indices in the keybody list
+        num_ee = current_ee_pos.shape[1]
+        num_target = target_keybody.shape[1]
+        
+        # Use first num_ee bodies from target (assumes order matches)
+        # TODO: Better mapping between ee_bodies and keybody indices
+        target_ee_pos = target_keybody[:, :min(num_ee, num_target), :]
+        current_compare = current_ee_pos[:, :min(num_ee, num_target), :]
+        
+        # Compute position error
+        error = torch.norm(current_compare - target_ee_pos, dim=-1).mean(dim=1)
+        
+        if best_error is None:
+            best_error = error
+        else:
+            best_error = torch.minimum(best_error, error)
+    
+    return torch.exp(-best_error / std)
+
+
+def tracking_ee_pos_direct(
+    env: ManagerBasedRLEnv,
+    ee_bodies: list[str],
+    std: float = 0.05,
+) -> torch.Tensor:
+    """Direct end-effector position tracking without time window.
+    
+    Simpler version that tracks current frame only.
+    Use this for faster training if windowed version is too slow.
+    
+    Args:
+        env: The environment instance.
+        ee_bodies: List of end-effector body names.
+        std: Standard deviation for exponential kernel (meters).
+    
+    Returns:
+        Reward tensor of shape (num_envs,)
+    """
+    # Skip if motion not initialized
+    if not hasattr(env, '_motion_initialized') or not env._motion_initialized:
+        return torch.zeros(env.num_envs, device=env.device)
+    
+    robot = env.scene["robot"]
+    
+    # Get EE body indices
+    ee_ids = []
+    for body_name in ee_bodies:
+        try:
+            found = robot.find_bodies(body_name)[0]
+            if found:
+                ee_ids.extend(found)
+        except ValueError:
+            pass
+    
+    if not ee_ids:
+        return torch.zeros(env.num_envs, device=env.device)
+    
+    # Current end-effector positions
+    current_ee_pos = robot.data.body_pos_w[:, ee_ids, :]  # (num_envs, num_ee, 3)
+    
+    # Get target positions from keybody
+    target_state = env.get_target_state()
+    target_keybody = target_state["keybody_pos"]  # (num_envs, num_bodies, 3)
+    
+    # Match dimensions
+    num_ee = current_ee_pos.shape[1]
+    num_target = target_keybody.shape[1]
+    num_compare = min(num_ee, num_target)
+    
+    target_ee_pos = target_keybody[:, :num_compare, :]
+    current_compare = current_ee_pos[:, :num_compare, :]
+    
+    # Compute position error
+    pos_error = torch.norm(current_compare - target_ee_pos, dim=-1).mean(dim=1)
+    
+    return torch.exp(-pos_error / std)
+
+
+def ee_velocity_direction(
+    env: ManagerBasedRLEnv,
+    ee_bodies: list[str],
+) -> torch.Tensor:
+    """Reward for matching end-effector velocity direction.
+    
+    Rather than exact position, reward moving in the right direction.
+    This provides a smoother learning signal and is more forgiving
+    of timing differences.
+    
+    Uses cosine similarity between current and target velocity vectors.
+    
+    Args:
+        env: The environment instance.
+        ee_bodies: List of end-effector body names.
+    
+    Returns:
+        Reward tensor of shape (num_envs,) in range [0, 1].
+    """
+    # Skip if motion not initialized
+    if not hasattr(env, '_motion_initialized') or not env._motion_initialized:
+        return torch.zeros(env.num_envs, device=env.device)
+    
+    robot = env.scene["robot"]
+    
+    # Get EE body indices
+    ee_ids = []
+    for body_name in ee_bodies:
+        try:
+            found = robot.find_bodies(body_name)[0]
+            if found:
+                ee_ids.extend(found)
+        except ValueError:
+            pass
+    
+    if not ee_ids:
+        return torch.zeros(env.num_envs, device=env.device)
+    
+    # Current end-effector velocities
+    current_ee_vel = robot.data.body_lin_vel_w[:, ee_ids, :]  # (num_envs, num_ee, 3)
+    
+    # Get target velocities from motion
+    target_state = env.get_target_state()
+    
+    # Target velocity from keybody motion (finite difference in MotionLib)
+    # If not available, compute from position difference
+    if "keybody_vel" in target_state:
+        target_keybody_vel = target_state["keybody_vel"]
+    else:
+        # Approximate velocity from position difference between frames
+        target_state_next = env.get_target_state(frame_offset=1)
+        target_keybody = target_state["keybody_pos"]
+        target_keybody_next = target_state_next["keybody_pos"]
+        fps = getattr(env, '_motion_fps', 30.0)
+        target_keybody_vel = (target_keybody_next - target_keybody) * fps
+    
+    # Match dimensions
+    num_ee = current_ee_vel.shape[1]
+    num_target = target_keybody_vel.shape[1]
+    num_compare = min(num_ee, num_target)
+    
+    current_vel = current_ee_vel[:, :num_compare, :]
+    target_vel = target_keybody_vel[:, :num_compare, :]
+    
+    # Compute cosine similarity
+    current_norm = torch.norm(current_vel, dim=-1, keepdim=True) + 1e-6
+    target_norm = torch.norm(target_vel, dim=-1, keepdim=True) + 1e-6
+    
+    cos_sim = torch.sum(
+        (current_vel / current_norm) * (target_vel / target_norm),
+        dim=-1
+    )
+    
+    # Average across end-effectors, map from [-1,1] to [0,1]
+    return (cos_sim.mean(dim=1) + 1.0) / 2.0
+
+
+def upper_body_stability(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward for maintaining stable upper body while arms move.
+    
+    Penalizes excessive torso angular velocity, encouraging the
+    robot to keep its core stable while manipulating.
+    
+    Args:
+        env: The environment instance.
+        asset_cfg: Configuration for the robot asset.
+    
+    Returns:
+        Reward tensor of shape (num_envs,) in range [0, 1].
+    """
+    robot = env.scene[asset_cfg.name]
+    
+    # Get torso angular velocity
+    torso_idx = robot.find_bodies("torso_link")[0][0]
+    torso_ang_vel = robot.data.body_ang_vel_w[:, torso_idx, :]  # (num_envs, 3)
+    
+    # Penalize angular velocity magnitude
+    ang_vel_mag = torch.norm(torso_ang_vel, dim=1)
+    
+    # Exponential reward: 1 when stable, 0 when rotating fast
+    return torch.exp(-ang_vel_mag / 0.5)
 
 
 ##############################################################################

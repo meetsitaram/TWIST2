@@ -408,23 +408,41 @@ python scripts/train_isaaclab.py \
     --headless
 ```
 
-### Prepare Stage 3
-- [ ] Add `tracking_end_effector_pos` to `motion_mdp.py`
-- [ ] Add `tracking_end_effector_rot` to `motion_mdp.py`
-- [ ] Add `G1MotionMimicEnvCfg_TELEOP` config
-- [ ] Add `--teleop_precision` flag to `train_isaaclab.py`
-- [ ] Update `convert_episodes_to_motion.py` for hand poses
-- [ ] Record manipulation demos
+### Prepare Stage 3 (COMPLETED)
+- [x] Add `tracking_ee_pos_direct` to `motion_mdp.py` (position tracking)
+- [x] Add `tracking_ee_pos_windowed` to `motion_mdp.py` (temporal tolerance)
+- [x] Add `ee_velocity_direction` to `motion_mdp.py` (velocity matching)
+- [x] Add `upper_body_stability` to `motion_mdp.py`
+- [x] Add `G1MotionMimicEnvCfg_STAGE3` config
+- [x] Add `--stage3` flag to `train_isaaclab.py`
+- [x] Convert teleop episodes to motion format
+- [x] Register `Isaac-Motion-Mimic-G1-Stage3-v0` environment
 
-### Test Stage 3
+**Note:** Orientation tracking was intentionally omitted - motion data only contains
+body positions (via FK), not orientations. Focus is purely on position accuracy.
+
+### Stage 3 Training Command
 ```bash
+cd /home/stickbot/projects/g1-pick-n-place/TWIST2
+
 python scripts/train_isaaclab.py \
-    --motion_file motion_data_configs/manipulation_demos.yaml \
+    --motion_file motion_data_configs/upper_body_teleop.yaml \
     --num_envs 4096 \
     --max_iterations 30000 \
-    --teleop_precision \
-    --resume logs/isaaclab/motion_mimic/model_STAGE2.pt
+    --stage3 \
+    --checkpoint logs/isaaclab/motion_mimic/model_STAGE2.pt \
+    --headless
 ```
+
+### Stage 3 Reward Weights
+| Reward | Weight | Purpose |
+|--------|--------|---------|
+| `tracking_ee_pos` | 5.0 | Primary: hand position accuracy |
+| `ee_velocity_direction` | 1.0 | Velocity direction matching |
+| `upper_body_stability` | 1.5 | Keep torso stable |
+| `tracking_root_height` | 2.0 | Maintain standing height |
+| `tracking_root_pos_xy` | 0.5 | Allow drift for balance |
+| `termination_penalty` | -200 | Don't fall |
 
 ---
 

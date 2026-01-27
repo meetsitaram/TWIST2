@@ -1,0 +1,35 @@
+# TWIST2 Motion Dataset Config
+# Generated from teleop episodes
+# Config: upper_body_teleop
+
+root_path: /home/stickbot/projects/g1-pick-n-place/TWIST2/datasets/teleop_motions/stage3_upper_body
+
+motions:
+  - file: both-hands-2.pkl
+    weight: 1.0
+  - file: both-hands.pkl
+    weight: 1.0
+  - file: cut.pkl
+    weight: 1.0
+  - file: left-hand.pkl
+    weight: 1.0
+  - file: micro.pkl
+    weight: 1.0
+  - file: open-doors.pkl
+    weight: 1.0
+  - file: pick-place-2.pkl
+    weight: 1.0
+  - file: pick-place-3.pkl
+    weight: 1.0
+  - file: pick-place-both-hands.pkl
+    weight: 1.0
+  - file: pick-place.pkl
+    weight: 1.0
+  - file: right-hand.pkl
+    weight: 1.0
+  - file: too-fast.pkl
+    weight: 1.0
+  - file: wave.pkl
+    weight: 1.0
+  - file: wipe.pkl
+    weight: 1.0

@@ -150,8 +150,13 @@ class G1MotionMimicEnv(ManagerBasedRLEnv):
         episode_time = self.episode_length_buf * self.step_dt
         return episode_time + self.motion_start_times
     
-    def get_target_state(self):
+    def get_target_state(self, frame_offset: int = 0):
         """Get current target state from motion library.
+        
+        Args:
+            frame_offset: Optional frame offset for temporal windowing.
+                          Positive = future frames, Negative = past frames.
+                          At 30fps, ±2 frames = ±66ms.
         
         Returns:
             Dict with target dof_pos, dof_vel, root_pos, root_rot, keybody_pos.
@@ -171,6 +176,15 @@ class G1MotionMimicEnv(ManagerBasedRLEnv):
             }
         
         motion_time = self.get_motion_time()
+        
+        # Apply frame offset for temporal windowing
+        if frame_offset != 0:
+            # Get FPS from motion lib or use default
+            fps = getattr(self.motion_lib, 'fps', 30.0)
+            time_offset = frame_offset / fps
+            motion_time = motion_time + time_offset
+            # Clamp to valid time range (handled by motion_lib internally)
+        
         motion_state = self.motion_lib.get_motion_state(self.motion_ids, motion_time)
         
         # Handle DOF count mismatch (motion may have fewer DOFs than robot)

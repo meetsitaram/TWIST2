@@ -115,9 +115,17 @@ def build_joint_mapping(joint_names: list) -> dict:
 
 
 def load_motion(motion_file: str) -> dict:
-    """Load motion data from PKL file."""
-    with open(motion_file, 'rb') as f:
-        data = pickle.load(f)
+    """Load motion data from PKL or NPZ file."""
+    if motion_file.endswith('.npz'):
+        npz = np.load(motion_file, allow_pickle=True)
+        data = {k: npz[k] for k in npz.files}
+        # Extract fps from metadata
+        if '_meta_fps' in data:
+            data['fps'] = float(data['_meta_fps'][0])
+            del data['_meta_fps']
+    else:
+        with open(motion_file, 'rb') as f:
+            data = pickle.load(f)
     
     print(f"[Motion] Loaded: {motion_file}")
     print(f"[Motion] Keys: {list(data.keys())}")
@@ -165,7 +173,10 @@ def main():
     print("\n[Env] Creating Isaac Lab environment...")
     env_cfg = G1MotionMimicEnvCfg()
     env_cfg.scene.num_envs = args.num_envs
-    env_cfg.motion_file = os.path.join(TWIST2_ROOT, "motion_data_configs/teleop_dataset.yaml")
+    
+    # Use the specified motion file directly (single file or YAML)
+    # For kinematic replay, we just need a valid motion file to initialize
+    env_cfg.motion_file = motion_path
     
     # Disable all events
     env_cfg.events.base_external_force_torque = None

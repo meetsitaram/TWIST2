@@ -6,7 +6,12 @@
 
 import gymnasium as gym
 
-from .g1_motion_mimic_env_cfg import G1MotionMimicEnvCfg, G1MotionMimicEnvCfg_PLAY
+from .g1_motion_mimic_env_cfg import (
+    G1MotionMimicEnvCfg, 
+    G1MotionMimicEnvCfg_PLAY,
+    G1MotionMimicEnvCfg_ROBUST,
+    G1MotionMimicEnvCfg_STAGE3,
+)
 from .g1_motion_mimic_env import G1MotionMimicEnv
 
 # Agent configs
@@ -36,8 +41,30 @@ gym.register(
     },
 )
 
+gym.register(
+    id="Isaac-Motion-Mimic-G1-Robust-v0",
+    entry_point="isaaclab_envs.g1_motion_mimic_env:G1MotionMimicEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": "isaaclab_envs.g1_motion_mimic_env_cfg:G1MotionMimicEnvCfg_ROBUST",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1MotionMimicPPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="Isaac-Motion-Mimic-G1-Stage3-v0",
+    entry_point="isaaclab_envs.g1_motion_mimic_env:G1MotionMimicEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": "isaaclab_envs.g1_motion_mimic_env_cfg:G1MotionMimicEnvCfg_STAGE3",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1MotionMimicPPORunnerCfg",
+    },
+)
+
 __all__ = [
     "G1MotionMimicEnvCfg", 
     "G1MotionMimicEnvCfg_PLAY",
+    "G1MotionMimicEnvCfg_ROBUST",
+    "G1MotionMimicEnvCfg_STAGE3",
     "G1MotionMimicEnv",
 ]

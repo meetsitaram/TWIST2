@@ -2,7 +2,7 @@
 # Generated from teleop episodes
 # Config: stand_and_walk
 
-root_path: /home/stickbot/projects/g1-pick-n-place/TWIST2/datasets/teleop_motions
+root_path: /home/stickbot/projects/g1-pick-n-place/TWIST2/datasets/teleop_motions/stage1_stand_walk
 
 motions:
   - file: large-steps.pkl
