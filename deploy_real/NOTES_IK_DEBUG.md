@@ -931,6 +931,7 @@ bash sim2sim.sh
 2. [ ] Test policy tracking quality on custom motions
 3. [ ] Implement two-stage IK for better lower body tracking
 4. [ ] Record whole-body walking motions with lower body enabled
+5. [ ] **Deploy trained policy with teleop overlay** (see next section)
 
 ---
 
@@ -1179,3 +1180,353 @@ Key metrics to watch:
 - `Episode_Reward/feet_distance`: New penalty for wide stance
 - `Episode_Termination/base_contact`: Falls due to contact
 - `Episode_Termination/bad_height`: Falls detected by height threshold
+
+---
+
+## Next Session: Teleop Overlay on Trained Policy
+
+### Goal
+
+Deploy the trained Isaac Lab policy with real-time teleop overlay:
+- **Lower body**: Controlled by trained RL policy (balance + locomotion)
+- **Upper body**: Controlled by camera teleop or recorded motions
+
+This mirrors TWIST2's two-level architecture where the low-level policy handles motion tracking while upper body targets come from external sources.
+
+### Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    Teleop + Trained Policy Deployment               │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────┐        ┌──────────────────┐
+│  Trained Policy  │        │  Camera Teleop   │
+│  (Isaac Lab)     │        │  or PKL Motion   │
+└────────┬─────────┘        └────────┬─────────┘
+         │                           │
+         │ Lower body actions        │ Upper body targets
+         │ (legs: 12 DOF)            │ (arms: 14 DOF, waist: 3 DOF)
+         │                           │
+         └───────────┬───────────────┘
+                     │
+                     ▼
+           ┌─────────────────┐
+           │  Action Merge   │
+           │  (29 DOF total) │
+           └────────┬────────┘
+                    │
+                    ▼
+           ┌─────────────────┐
+           │  Isaac Lab Sim  │
+           │  (Physics)      │
+           └─────────────────┘
+```
+
+### TWIST2 Observation Space (Reference)
+
+From `twist2_rl_training_deep_dive.md`:
+
+```
+mimic_obs (35 dims) - Motion target the policy tracks:
+├── Root state (6 dims):
+│   ├── pos_z (height)
+│   ├── roll, pitch (orientation)
+│   ├── vel_x, vel_y (linear velocity)
+│   └── yaw_vel (angular velocity)
+└── Joint positions (29 dims):
+    ├── Left leg: 6 DOF (indices 0-5)
+    ├── Right leg: 6 DOF (indices 6-11)
+    ├── Waist: 3 DOF (indices 12-14)
+    ├── Left arm: 7 DOF (indices 15-21)
+    └── Right arm: 7 DOF (indices 22-28)
+```
+
+### Implementation Options
+
+#### Option A: Isaac Lab Native (Recommended)
+
+Modify `play_isaaclab.py` to accept external upper body targets.
+
+**Pros**: Keeps everything in Isaac Lab, better physics, easier debugging
+**Cons**: Need to adapt teleop streaming to Isaac Lab
+
+**Steps**:
+1. Create `play_isaaclab_teleop.py`:
+   - Load trained policy
+   - Accept upper body targets via Redis or direct input
+   - Override upper body actions before applying to robot
+   
+2. Teleop input sources:
+   - **Live camera**: `multicam_pose_streamer.py` → Redis → Isaac Lab
+   - **Recorded motion**: Load PKL file, playback upper body portion
+
+**Key code pattern**:
+```python
+# In play loop:
+with torch.no_grad():
+    actions = actor_critic.act_inference(obs)  # Full 29 DOF actions
+
+# Override upper body with teleop targets
+if teleop_enabled:
+    upper_body_targets = get_teleop_targets()  # From Redis/camera/PKL
+    actions[:, 15:29] = upper_body_targets     # Arms (indices 15-28)
+    # Optionally: actions[:, 12:15] = waist_targets  # Waist (indices 12-14)
+
+obs, rewards, dones, infos = env.step(actions)
+```
+
+#### Option B: ONNX Export + MuJoCo (Original TWIST2 Style)
+
+Export Isaac Lab model and use existing `sim2sim.sh` infrastructure.
+
+**Pros**: Works with existing camera streaming, battle-tested
+**Cons**: Need ONNX export, different physics engine
+
+**Steps**:
+1. Export RSL-RL model to ONNX:
+   ```python
+   # Export actor to ONNX
+   dummy_input = torch.randn(1, obs_dim).cuda()
+   torch.onnx.export(actor_critic.actor, dummy_input, "policy.onnx")
+   ```
+
+2. Adapt `server_low_level_g1_sim.py` to accept Isaac Lab observation format
+3. Use existing `multicam_with_motion.py` for teleop overlay
+
+### Tasks for Next Session
+
+```
+[ ] 1. Verify trained policy checkpoint exists and works
+    - Run play_isaaclab.py with latest checkpoint
+    - Confirm robot can stand/move reasonably
+
+[ ] 2. Create play_isaaclab_teleop.py
+    - Copy from play_isaaclab.py
+    - Add Redis client for receiving teleop targets
+    - Add upper body action override logic
+    - Add option to load PKL motion for upper body
+
+[ ] 3. Test with recorded motion overlay
+    - Load a PKL file (e.g., teleop_episode_*.pkl)
+    - Play lower body from policy, upper body from PKL
+    - Verify smooth blending
+
+[ ] 4. Test with live camera input
+    - Start multicam_pose_streamer.py
+    - Stream upper body targets to Redis
+    - Play with live arm control overlay
+
+[ ] 5. Document the complete workflow
+```
+
+### Joint Index Reference (G1 29-DOF)
+
+```
+Index | Joint Name              | Body Part
+------|-------------------------|----------
+0-5   | left_leg (hip/knee/ankle) | Lower body
+6-11  | right_leg               | Lower body
+12-14 | waist (yaw/roll/pitch)  | Core
+15-21 | left_arm (shoulder/elbow/wrist) | Upper body
+22-28 | right_arm               | Upper body
+```
+
+### Files to Create/Modify
+
+```
+TWIST2/
+├── scripts/
+│   ├── play_isaaclab.py           # Existing visualization
+│   └── play_isaaclab_teleop.py    # NEW: Teleop overlay deployment
+├── deploy_real/
+│   ├── multicam_pose_streamer.py  # Existing camera tracking
+│   └── isaac_lab_teleop_client.py # NEW: Bridge to Isaac Lab
+└── motion_data_configs/
+    └── teleop_dataset.yaml        # Recorded motions for testing
+```
+
+### Reference Commands
+
+```bash
+# Terminal 1: Run policy with teleop (once implemented)
+cd ~/projects/g1-pick-n-place/TWIST2
+conda activate env_isaaclab
+python scripts/play_isaaclab_teleop.py \
+    --checkpoint logs/isaaclab/motion_mimic/model_XXXX.pt \
+    --teleop redis  # or --teleop pkl --motion_file path/to/motion.pkl
+
+# Terminal 2: Stream camera teleop (existing)
+cd ~/projects/g1-pick-n-place/TWIST2/deploy_real
+conda activate gmr
+python multicam_pose_streamer.py --camera-ids 4,6,2
+```
+
+---
+
+## Session Notes - Jan 26, 2026 (Teleop Overlay Implementation)
+
+### Teleop Overlay on Trained Policy - IMPLEMENTED
+
+Created two new scripts for deploying trained Isaac Lab policy with real-time teleop overlay:
+
+#### 1. `scripts/play_isaaclab_teleop.py`
+
+Main deployment script that runs trained policy with upper body teleop overlay.
+
+**Key Features:**
+- Lower body (legs, joints 0-11): Controlled by trained RL policy
+- Waist (joints 12-14): Configurable - policy or teleop controlled (--blend_waist)
+- Upper body (arms, joints 15-28): Controlled by teleop targets
+
+**Teleop Sources:**
+- `--teleop none`: Full policy control (no overlay)
+- `--teleop pkl`: Recorded motion from PKL file
+- `--teleop redis`: Live camera streaming via Redis
+
+**Usage:**
+
+```bash
+# PKL motion overlay
+cd ~/projects/g1-pick-n-place/TWIST2
+conda activate env_isaaclab
+python scripts/play_isaaclab_teleop.py \
+    --checkpoint logs/isaaclab/motion_mimic/model_17500.pt \
+    --teleop pkl \
+    --motion_file datasets/teleop_motions/elbow_track_007.pkl \
+    --motion_loop
+
+# Live camera teleop
+python scripts/play_isaaclab_teleop.py \
+    --checkpoint logs/isaaclab/motion_mimic/model_17500.pt \
+    --teleop redis
+
+# Policy only (no overlay, for comparison)
+python scripts/play_isaaclab_teleop.py \
+    --checkpoint logs/isaaclab/motion_mimic/model_17500.pt \
+    --teleop none
+```
+
+**Command Line Options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| --checkpoint | (required) | Path to trained model checkpoint |
+| --teleop | none | Teleop source: none, pkl, redis |
+| --motion_file | None | PKL motion file (for --teleop pkl) |
+| --motion_loop | False | Loop motion file when it ends |
+| --redis_host | localhost | Redis server host |
+| --redis_port | 6379 | Redis server port |
+| --redis_key | teleop:mimic_obs | Redis key for targets |
+| --blend_waist | False | Also control waist from teleop |
+| --blend_alpha | 1.0 | Blend factor (0=policy, 1=teleop) |
+| --num_envs | 4 | Number of parallel environments |
+
+#### 2. `deploy_real/isaac_lab_teleop_publisher.py`
+
+Bridge script that publishes camera teleop targets to Redis for consumption by Isaac Lab.
+
+**Pipeline:**
+```
+Camera Capture → MediaPipe → 3D Triangulation → IK Retarget → Redis → Isaac Lab Policy
+```
+
+**Usage:**
+
+```bash
+# Terminal 1: Start teleop publisher
+cd ~/projects/g1-pick-n-place/TWIST2/deploy_real
+conda activate gmr
+python isaac_lab_teleop_publisher.py --display
+
+# Terminal 2: Run policy with teleop
+cd ~/projects/g1-pick-n-place/TWIST2
+conda activate env_isaaclab
+python scripts/play_isaaclab_teleop.py \
+    --checkpoint logs/isaaclab/motion_mimic/model_17500.pt \
+    --teleop redis
+```
+
+**Redis Keys Published:**
+- `teleop:mimic_obs`: (29,) float32 array of target joint positions
+- `teleop:mimic_obs:qpos`: (36,) float32 array of full qpos (with base)
+- `teleop:mimic_obs:ik_error`: IK error as string
+
+### Joint Index Reference (G1 29-DOF)
+
+```
+Index | Joint Group    | DOF | Body Part     | Control
+------|----------------|-----|---------------|----------
+0-5   | left_leg       | 6   | Lower body    | Policy
+6-11  | right_leg      | 6   | Lower body    | Policy
+12-14 | waist          | 3   | Core          | Policy (or teleop with --blend_waist)
+15-21 | left_arm       | 7   | Upper body    | Teleop
+22-28 | right_arm      | 7   | Upper body    | Teleop
+```
+
+### Action Blending Logic
+
+The policy outputs relative actions (delta from default joint positions).
+For teleop overlay:
+
+```python
+# Policy actions for all joints
+policy_actions = actor_critic.act_inference(obs)
+
+# Convert teleop absolute positions to relative actions
+teleop_actions = teleop_dof - default_joint_pos
+
+# Blend upper body
+alpha = 1.0  # Full teleop
+for idx in range(15, 29):  # Arms only
+    policy_actions[:, idx] = (1 - alpha) * policy_actions[:, idx] + alpha * teleop_actions[:, idx]
+
+# Optionally blend waist
+if blend_waist:
+    for idx in range(12, 15):
+        policy_actions[:, idx] = (1 - alpha) * policy_actions[:, idx] + alpha * teleop_actions[:, idx]
+
+# Lower body always from policy - no changes
+```
+
+### Files Created
+
+| File | Purpose |
+|------|---------|
+| `scripts/play_isaaclab_teleop.py` | Isaac Lab policy with teleop overlay |
+| `deploy_real/isaac_lab_teleop_publisher.py` | Camera → Redis bridge for teleop |
+
+### Testing Checklist
+
+```
+[x] 1. Create play_isaaclab_teleop.py with teleop overlay
+[x] 2. Add Redis client for live teleop
+[x] 3. Add PKL motion file playback
+[x] 4. Implement action blending logic
+[ ] 5. Test with PKL motion overlay
+    cd ~/projects/g1-pick-n-place/TWIST2
+    conda activate env_isaaclab
+    python scripts/play_isaaclab_teleop.py \
+        --checkpoint logs/isaaclab/motion_mimic/model_17500.pt \
+        --teleop pkl --motion_file datasets/teleop_motions/elbow_track_007.pkl --motion_loop
+[ ] 6. Test with live camera input
+    # Terminal 1: Start publisher
+    cd ~/projects/g1-pick-n-place/TWIST2/deploy_real
+    conda activate gmr
+    python isaac_lab_teleop_publisher.py --display
+    
+    # Terminal 2: Start policy
+    cd ~/projects/g1-pick-n-place/TWIST2
+    conda activate env_isaaclab
+    python scripts/play_isaaclab_teleop.py \
+        --checkpoint logs/isaaclab/motion_mimic/model_17500.pt \
+        --teleop redis
+```
+
+### Next Steps
+
+1. **Test PKL overlay**: Verify robot can stand while playing recorded arm motions
+2. **Test Redis teleop**: Verify real-time camera control works
+3. **Tune blend parameters**: May need to adjust blend_alpha for smooth transitions
+4. **Add waist control**: Test with --blend_waist to see if it improves tracking
+5. **Export to real robot**: Once verified in sim, adapt for real G1 deployment

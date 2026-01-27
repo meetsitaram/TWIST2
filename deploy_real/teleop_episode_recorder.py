@@ -69,6 +69,7 @@ class TeleopEpisode:
     smoothing: str                     # "none", "ema", "one_euro", etc.
     smoothing_params: Dict             # Parameters used
     frames: List[TeleopFrame] = field(default_factory=list)
+    metadata: Dict = field(default_factory=dict)  # Full metadata dict from file
     
     @property
     def duration_sec(self) -> float:
@@ -140,6 +141,9 @@ class TeleopEpisodeRecorder:
         self.start_time_ms: Optional[int] = None
         self.recording = False
         self.video_frame_count = 0
+        
+        # Extra metadata that can be added before saving (e.g., FPS stats)
+        self.extra_metadata: Dict = {}
         
     def start(self):
         """Start recording (resets any existing frames)."""
@@ -290,6 +294,8 @@ class TeleopEpisodeRecorder:
             "camera_ids": self.camera_ids,
             "video_resolution": list(self.video_resolution) if self.record_video else None,
         }
+        # Merge any extra metadata (e.g., FPS stats from recording)
+        metadata.update(self.extra_metadata)
         metadata_json = json.dumps(metadata)
         
         # Save compressed
@@ -344,6 +350,7 @@ class TeleopEpisodeRecorder:
             smoothing=metadata['smoothing'],
             smoothing_params=metadata['smoothing_params'],
             frames=frames,
+            metadata=metadata,  # Store full metadata for access to extra fields
         )
         
         return episode

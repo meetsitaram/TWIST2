@@ -52,6 +52,7 @@ sys.path.insert(0, project_root)
 from deploy_real.multicam_pose_streamer import MultiCamPoseStreamer
 from deploy_real.end_effector_ik_retarget import EndEffectorIKRetargeter, ROBOT_MODEL_PATH
 from deploy_real.teleop_episode_recorder import TeleopEpisodeRecorder, EPISODES_DIR
+from deploy_real.data_utils.fps_monitor import FPSMonitor
 
 try:
     import cv2
@@ -139,10 +140,14 @@ class IKTeleopStreamer:
         # Set initial pose
         self._set_default_pose()
         
-        # Stats
-        self.frame_count = 0
-        self.last_fps_time = time.time()
-        self.fps = 0.0
+        # FPS monitoring
+        self.fps_monitor = FPSMonitor(
+            enable_detailed_stats=True,
+            quick_print_interval=30,  # Print every 30 frames (~1 second at 30fps)
+            detailed_print_interval=300,  # Detailed stats every 300 frames (~10 seconds)
+            expected_fps=target_fps,
+            name="Recording" if record else "Teleop",
+        )
         
         # IK failure recovery - balanced settings
         self.ik_error_threshold = 0.5  # Relaxed - only reject very bad IK results
@@ -372,14 +377,8 @@ class IKTeleopStreamer:
                 # Update viewer
                 viewer.sync()
                 
-                # Update FPS counter
-                self.frame_count += 1
-                now = time.time()
-                if now - self.last_fps_time >= 1.0:
-                    self.fps = self.frame_count / (now - self.last_fps_time)
-                    self.frame_count = 0
-                    self.last_fps_time = now
-                    print(f"[IK Teleop] FPS: {self.fps:.1f}")
+                # Update FPS monitor (prints stats at configured intervals)
+                self.fps_monitor.tick()
                 
                 # Rate limiting
                 elapsed = time.time() - loop_start
@@ -392,9 +391,25 @@ class IKTeleopStreamer:
         finally:
             self.running = False
             
+            # Print final FPS summary
+            avg_fps = self.fps_monitor.get_average_fps()
+            if avg_fps is not None:
+                print(f"\n{'='*60}")
+                print(f"  FPS Summary")
+                print(f"{'='*60}")
+                print(f"  Average FPS: {avg_fps:.2f} Hz")
+                print(f"  Target FPS:  {self.target_fps} Hz")
+                if avg_fps > 0:
+                    print(f"  Deviation:   {avg_fps - self.target_fps:+.2f} Hz ({(avg_fps/self.target_fps - 1)*100:+.1f}%)")
+                print(f"{'='*60}\n")
+            
             # Save recording if active
             if self.recorder:
                 self.recorder.stop()
+                # Add FPS stats to extra_metadata before saving
+                if avg_fps is not None:
+                    self.recorder.extra_metadata['avg_fps'] = round(avg_fps, 2)
+                    self.recorder.extra_metadata['target_fps'] = self.target_fps
                 self.recorder.save()
             
             self.camera_streamer.stop()
@@ -410,11 +425,11 @@ def list_episodes():
         print(f"\nNo episodes found in: {EPISODES_DIR}")
         return
     
-    print(f"\n{'='*70}")
+    print(f"\n{'='*85}")
     print(f"  Available Episodes ({len(episodes)})")
-    print(f"{'='*70}")
-    print(f"{'Name':<25} {'Frames':>8} {'Duration':>10} {'Smoothing':<15} {'Video'}")
-    print("-" * 70)
+    print(f"{'='*85}")
+    print(f"{'Name':<25} {'Frames':>8} {'Duration':>10} {'FPS':>12} {'Smoothing':<12} {'Video'}")
+    print("-" * 85)
     
     for filepath in episodes:
         try:
@@ -424,7 +439,19 @@ def list_episodes():
             video_files = list(filepath.parent.glob(f"{episode.name}_cam*.mp4"))
             has_video = "Yes" if video_files else "No"
             
-            print(f"{episode.name:<25} {episode.num_frames:>8} {episode.duration_sec:>9.1f}s {episode.smoothing:<15} {has_video}")
+            # Get FPS info from metadata if available
+            metadata = episode.metadata if hasattr(episode, 'metadata') else {}
+            avg_fps = metadata.get('avg_fps')
+            target_fps = metadata.get('target_fps', episode.fps)
+            
+            if avg_fps is not None:
+                fps_str = f"{avg_fps:.1f}/{target_fps}"
+            else:
+                # Calculate from data
+                actual_fps = episode.num_frames / episode.duration_sec if episode.duration_sec > 0 else 0
+                fps_str = f"{actual_fps:.1f}/{episode.fps}"
+            
+            print(f"{episode.name:<25} {episode.num_frames:>8} {episode.duration_sec:>9.1f}s {fps_str:>12} {episode.smoothing:<12} {has_video}")
         except Exception as e:
             print(f"{filepath.stem:<25} [Error loading: {e}]")
     

@@ -1,0 +1,334 @@
+#!/usr/bin/env python3
+"""
+Replay PKL motion files in Isaac Lab (kinematic mode).
+
+This script loads a PKL motion file and directly sets robot joint positions
+(no physics, no policy) to verify the joint mapping and visualize motions.
+
+Usage:
+    cd ~/projects/g1-pick-n-place/TWIST2
+    conda activate env_isaaclab
+    python scripts/replay_kinematic_isaaclab.py \
+        --motion_file datasets/teleop_motions/elbow_track_007.pkl
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+import pickle
+import time
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+TWIST2_ROOT = os.path.dirname(SCRIPT_DIR)
+sys.path.insert(0, TWIST2_ROOT)
+
+##############################################################################
+# ISAAC LAB APP LAUNCHER
+##############################################################################
+
+from isaaclab.app import AppLauncher
+
+parser = argparse.ArgumentParser(description="Kinematic teleop joint test")
+parser.add_argument("--motion_file", type=str, required=True,
+                    help="PKL motion file to visualize")
+parser.add_argument("--num_envs", type=int, default=1,
+                    help="Number of robots to show")
+parser.add_argument("--speed", type=float, default=1.0,
+                    help="Playback speed multiplier")
+
+AppLauncher.add_app_launcher_args(parser)
+args = parser.parse_args()
+
+app_launcher = AppLauncher(args)
+simulation_app = app_launcher.app
+
+##############################################################################
+# IMPORTS
+##############################################################################
+
+import torch
+import numpy as np
+import gymnasium as gym
+
+import isaaclab_envs
+from isaaclab_envs.g1_motion_mimic_env_cfg import G1MotionMimicEnvCfg
+
+# Motion DOF count (body joints only, no fingers)
+MOTION_DOF_COUNT = 29
+
+# Joint mapping from MuJoCo (motion data) to Isaac Lab
+# MuJoCo index -> Isaac Lab joint name (we'll find the index at runtime)
+MUJOCO_TO_ISAACLAB_JOINT_NAMES = {
+    # Left leg
+    0: "left_hip_pitch_joint",      # left_hip_pitch_joint
+    1: "left_hip_roll_joint",       # left_hip_roll_joint
+    2: "left_hip_yaw_joint",        # left_hip_yaw_joint
+    3: "left_knee_joint",           # left_knee_joint
+    4: "left_ankle_pitch_joint",    # left_ankle_pitch_joint
+    5: "left_ankle_roll_joint",     # left_ankle_roll_joint
+    # Right leg
+    6: "right_hip_pitch_joint",     # right_hip_pitch_joint
+    7: "right_hip_roll_joint",      # right_hip_roll_joint
+    8: "right_hip_yaw_joint",       # right_hip_yaw_joint
+    9: "right_knee_joint",          # right_knee_joint
+    10: "right_ankle_pitch_joint",  # right_ankle_pitch_joint
+    11: "right_ankle_roll_joint",   # right_ankle_roll_joint
+    # Waist -> torso (Isaac Lab only has 1 torso joint, we'll map waist_yaw to it)
+    12: "torso_joint",              # waist_yaw_joint -> torso_joint
+    13: None,                       # waist_roll_joint - NO EQUIVALENT in Isaac Lab
+    14: None,                       # waist_pitch_joint - NO EQUIVALENT in Isaac Lab
+    # Left arm
+    15: "left_shoulder_pitch_joint",  # left_shoulder_pitch_joint
+    16: "left_shoulder_roll_joint",   # left_shoulder_roll_joint
+    17: "left_shoulder_yaw_joint",    # left_shoulder_yaw_joint
+    18: "left_elbow_pitch_joint",     # left_elbow_joint -> left_elbow_pitch_joint
+    19: "left_elbow_roll_joint",      # left_wrist_roll_joint -> left_elbow_roll_joint (closest)
+    20: None,                         # left_wrist_pitch_joint - NO EQUIVALENT
+    21: None,                         # left_wrist_yaw_joint - NO EQUIVALENT
+    # Right arm
+    22: "right_shoulder_pitch_joint", # right_shoulder_pitch_joint
+    23: "right_shoulder_roll_joint",  # right_shoulder_roll_joint
+    24: "right_shoulder_yaw_joint",   # right_shoulder_yaw_joint
+    25: "right_elbow_pitch_joint",    # right_elbow_joint -> right_elbow_pitch_joint
+    26: "right_elbow_roll_joint",     # right_wrist_roll_joint -> right_elbow_roll_joint (closest)
+    27: None,                         # right_wrist_pitch_joint - NO EQUIVALENT
+    28: None,                         # right_wrist_yaw_joint - NO EQUIVALENT
+}
+
+
+def build_joint_mapping(joint_names: list) -> dict:
+    """Build a mapping from MuJoCo motion indices to Isaac Lab joint indices."""
+    # Create name -> index lookup for Isaac Lab joints
+    il_name_to_idx = {name: idx for idx, name in enumerate(joint_names)}
+    
+    # Build mapping: mujoco_idx -> isaaclab_idx (or None if no equivalent)
+    mapping = {}
+    for mj_idx, il_name in MUJOCO_TO_ISAACLAB_JOINT_NAMES.items():
+        if il_name is not None and il_name in il_name_to_idx:
+            mapping[mj_idx] = il_name_to_idx[il_name]
+        else:
+            mapping[mj_idx] = None
+    
+    return mapping
+
+
+def load_motion(motion_file: str) -> dict:
+    """Load motion data from PKL file."""
+    with open(motion_file, 'rb') as f:
+        data = pickle.load(f)
+    
+    print(f"[Motion] Loaded: {motion_file}")
+    print(f"[Motion] Keys: {list(data.keys())}")
+    print(f"[Motion] FPS: {data.get('fps', 30)}")
+    print(f"[Motion] Frames: {len(data['dof_pos'])}")
+    print(f"[Motion] DOF shape: {data['dof_pos'].shape}")
+    
+    if 'root_pos' in data:
+        print(f"[Motion] Root pos shape: {data['root_pos'].shape}")
+    if 'root_rot' in data:
+        print(f"[Motion] Root rot shape: {data['root_rot'].shape}")
+    
+    return data
+
+
+def main():
+    print("=" * 60)
+    print("  Kinematic Teleop Joint Test")
+    print("=" * 60)
+    
+    # Load motion
+    motion_path = args.motion_file
+    if not os.path.isabs(motion_path):
+        motion_path = os.path.join(TWIST2_ROOT, motion_path)
+    
+    motion_data = load_motion(motion_path)
+    dof_pos = motion_data['dof_pos']  # (num_frames, 29)
+    root_pos = motion_data.get('root_pos', None)  # (num_frames, 3)
+    root_rot = motion_data.get('root_rot', None)  # (num_frames, 4)
+    fps = motion_data.get('fps', 30.0)
+    num_frames = len(dof_pos)
+    
+    print(f"\n[Motion] Duration: {num_frames / fps:.1f}s at {fps} FPS")
+    print(f"[Motion] Playback speed: {args.speed}x")
+    
+    # Print joint value ranges for debugging
+    print("\n[Motion] Joint value ranges (radians):")
+    for i in range(min(MOTION_DOF_COUNT, dof_pos.shape[1])):
+        min_val = dof_pos[:, i].min()
+        max_val = dof_pos[:, i].max()
+        mean_val = dof_pos[:, i].mean()
+        print(f"  Joint {i:2d}: min={min_val:7.3f}, max={max_val:7.3f}, mean={mean_val:7.3f}")
+    
+    # Create environment
+    print("\n[Env] Creating Isaac Lab environment...")
+    env_cfg = G1MotionMimicEnvCfg()
+    env_cfg.scene.num_envs = args.num_envs
+    env_cfg.motion_file = os.path.join(TWIST2_ROOT, "motion_data_configs/teleop_dataset.yaml")
+    
+    # Disable all events
+    env_cfg.events.base_external_force_torque = None
+    env_cfg.events.push_robot = None
+    env_cfg.events.add_base_mass = None
+    
+    env = gym.make("Isaac-Motion-Mimic-G1-v0", cfg=env_cfg)
+    
+    # Get robot reference
+    isaac_env = env.unwrapped
+    robot = isaac_env.scene["robot"]
+    
+    # Get joint info
+    num_joints = robot.num_joints
+    default_pos = robot.data.default_joint_pos[0].cpu().numpy()
+    joint_names = robot.joint_names
+    
+    print(f"\n[Robot] Total joints: {num_joints}")
+    print(f"[Robot] Motion DOFs: {MOTION_DOF_COUNT}")
+    print(f"[Robot] Extra joints (fingers): {num_joints - MOTION_DOF_COUNT}")
+    
+    # Expected MuJoCo 29-DOF joint order (from motion data)
+    MUJOCO_JOINT_ORDER = [
+        "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint",
+        "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
+        "right_hip_pitch_joint", "right_hip_roll_joint", "right_hip_yaw_joint",
+        "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
+        "waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint",
+        "left_shoulder_pitch_joint", "left_shoulder_roll_joint", "left_shoulder_yaw_joint",
+        "left_elbow_joint", "left_wrist_roll_joint", "left_wrist_pitch_joint", "left_wrist_yaw_joint",
+        "right_shoulder_pitch_joint", "right_shoulder_roll_joint", "right_shoulder_yaw_joint",
+        "right_elbow_joint", "right_wrist_roll_joint", "right_wrist_pitch_joint", "right_wrist_yaw_joint",
+    ]
+    
+    # Build joint mapping
+    joint_mapping = build_joint_mapping(joint_names)
+    
+    print("\n[Robot] Joint mapping (MuJoCo motion -> Isaac Lab):")
+    print("  MJ_Idx | MuJoCo Name                    | IL_Idx | Isaac Lab Name")
+    print("  -------|--------------------------------|--------|------------------")
+    for mj_idx in range(MOTION_DOF_COUNT):
+        mj_name = MUJOCO_JOINT_ORDER[mj_idx]
+        il_idx = joint_mapping.get(mj_idx)
+        if il_idx is not None:
+            il_name = joint_names[il_idx]
+            print(f"  {mj_idx:5d} | {mj_name:30s} | {il_idx:6d} | {il_name}")
+        else:
+            print(f"  {mj_idx:5d} | {mj_name:30s} |  (NONE) | NO EQUIVALENT")
+    
+    # Count mapped vs unmapped
+    mapped_count = sum(1 for v in joint_mapping.values() if v is not None)
+    print(f"\n[Mapping] {mapped_count}/{MOTION_DOF_COUNT} joints mapped, {MOTION_DOF_COUNT - mapped_count} unmapped")
+    
+    print("\n[Robot] Default joint positions:")
+    for i in range(min(MOTION_DOF_COUNT, len(default_pos))):
+        print(f"  Joint {i:2d}: {default_pos[i]:7.3f} rad")
+    
+    # Reset environment
+    obs, _ = env.reset()
+    
+    print("\n" + "-" * 60)
+    print("Starting kinematic playback (no physics)...")
+    print("Press Ctrl+C to stop")
+    print("-" * 60 + "\n")
+    
+    # Debug: Print first frame joint values
+    print("\n[Debug] First frame joint positions:")
+    first_frame_dof = dof_pos[0]
+    for i in range(min(MOTION_DOF_COUNT, len(first_frame_dof))):
+        print(f"  Joint {i:2d}: {first_frame_dof[i]:8.4f} rad ({np.degrees(first_frame_dof[i]):8.2f} deg)")
+    
+    # Playback loop
+    frame = 0
+    start_time = time.time()
+    last_print_frame = -1
+    
+    try:
+        while simulation_app.is_running():
+            # Get current frame based on time
+            elapsed = (time.time() - start_time) * args.speed
+            frame = int(elapsed * fps) % num_frames
+            
+            # Get joint positions for this frame
+            frame_dof = dof_pos[frame]  # (29,) in MuJoCo order
+            
+            # Create full joint position tensor starting from default
+            full_joint_pos = torch.tensor(
+                default_pos, dtype=torch.float32, device=isaac_env.device
+            ).unsqueeze(0).expand(args.num_envs, -1).clone()
+            
+            # Map motion joints to Isaac Lab joints using the mapping
+            for mj_idx, il_idx in joint_mapping.items():
+                if il_idx is not None and mj_idx < len(frame_dof):
+                    full_joint_pos[:, il_idx] = float(frame_dof[mj_idx])
+            
+            # Fixed root position (don't use motion root - keep robot in place)
+            # Just use the env origin with a fixed height
+            env_origins = isaac_env.scene.env_origins
+            fixed_root_pos = env_origins.clone()
+            fixed_root_pos[:, 2] = 0.78  # Fixed standing height
+            
+            # Fixed root orientation (upright, no rotation)
+            fixed_root_quat = torch.tensor(
+                [1.0, 0.0, 0.0, 0.0],  # Identity quaternion [w,x,y,z]
+                dtype=torch.float32, device=isaac_env.device
+            ).unsqueeze(0).expand(args.num_envs, -1)
+            
+            # Step simulation first (for rendering pipeline)
+            isaac_env.sim.step(render=False)
+            
+            # AFTER physics step, override with our kinematic pose
+            # This ensures our values aren't overwritten by physics
+            root_pose = torch.cat([fixed_root_pos, fixed_root_quat], dim=-1)
+            robot.write_root_pose_to_sim(root_pose)
+            
+            # Also set root velocity to zero to prevent drift
+            zero_vel = torch.zeros(args.num_envs, 6, device=isaac_env.device)
+            robot.write_root_velocity_to_sim(zero_vel)
+            
+            # Write joint positions
+            robot.write_joint_state_to_sim(
+                full_joint_pos,
+                torch.zeros_like(full_joint_pos)  # Zero velocity
+            )
+            
+            # Render the frame
+            isaac_env.sim.render()
+            
+            # Update robot data
+            robot.update(isaac_env.sim.cfg.dt)
+            
+            # Debug print - verify joints are being set
+            if frame != last_print_frame and frame % 30 == 0:
+                last_print_frame = frame
+                progress = frame / num_frames * 100
+                
+                # Read back actual joint positions
+                actual_joints = robot.data.joint_pos[0].cpu().numpy()
+                
+                # Check a mapped joint: left_shoulder_pitch (MuJoCo idx 15 -> Isaac Lab idx)
+                mj_shoulder_idx = 15  # left_shoulder_pitch in motion data
+                il_shoulder_idx = joint_mapping.get(mj_shoulder_idx)
+                
+                if il_shoulder_idx is not None:
+                    target_val = frame_dof[mj_shoulder_idx]
+                    actual_val = actual_joints[il_shoulder_idx]
+                    diff = abs(target_val - actual_val)
+                    
+                    print(f"\r[Frame {frame:4d}/{num_frames}] "
+                          f"L_shoulder_pitch: target={target_val:6.3f}, "
+                          f"actual={actual_val:6.3f}, "
+                          f"diff={diff:.4f}", end="", flush=True)
+            
+            # Small delay
+            time.sleep(0.01)
+    
+    except KeyboardInterrupt:
+        print("\n\n[Kinematic] Stopped by user")
+    
+    env.close()
+    simulation_app.close()
+    print("\n[Kinematic] Done!")
+
+
+if __name__ == "__main__":
+    main()
