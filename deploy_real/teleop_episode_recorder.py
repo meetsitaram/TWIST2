@@ -357,21 +357,33 @@ class TeleopEpisodeRecorder:
     
     @staticmethod
     def list_episodes(episodes_dir: Path = None) -> List[Path]:
-        """List all episode files in directory (each episode is in its own subdir)."""
+        """List all episode files in directory (supports nested stage folders).
+        
+        Searches for episodes in:
+        - episodes_dir/episode_name/episode_name.npz (original format)
+        - episodes_dir/stage_folder/episode_name/episode_name.npz (new format)
+        """
         if episodes_dir is None:
             episodes_dir = EPISODES_DIR
         
         if not episodes_dir.exists():
             return []
         
-        # Each episode is in its own subdirectory: episodes_dir/episode_name/episode_name.npz
         episode_files = []
-        for subdir in sorted(episodes_dir.iterdir()):
-            if subdir.is_dir():
-                npz_file = subdir / f"{subdir.name}.npz"
-                if npz_file.exists():
-                    episode_files.append(npz_file)
         
+        def find_episodes_in_dir(search_dir: Path):
+            """Recursively find episode NPZ files."""
+            for item in sorted(search_dir.iterdir()):
+                if item.is_dir():
+                    # Check if this is an episode directory (contains episode_name.npz)
+                    npz_file = item / f"{item.name}.npz"
+                    if npz_file.exists():
+                        episode_files.append(npz_file)
+                    else:
+                        # Could be a stage folder, recurse into it
+                        find_episodes_in_dir(item)
+        
+        find_episodes_in_dir(episodes_dir)
         return episode_files
 
 

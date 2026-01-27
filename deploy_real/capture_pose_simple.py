@@ -191,13 +191,25 @@ def main():
     camera_ids = config.get('camera_ids', [])
     print(f"\nCameras: {camera_ids}")
     
+    # Load world frame correction if available
+    world_pitch = config.get('world_pitch_correction_deg', 0.0)
+    world_roll = config.get('world_roll_correction_deg', 0.0)
+    leg_pitch = config.get('leg_pitch_correction_deg', 0.0)
+    if abs(world_pitch) > 0.1 or abs(world_roll) > 0.1:
+        print(f"World frame correction: pitch={world_pitch}°, roll={world_roll}°")
+    if abs(leg_pitch) > 0.1:
+        print(f"Leg pitch correction: {leg_pitch}°")
+    
     # Initialize streamer (disable internal display, we'll handle it)
     print("Starting cameras...")
     streamer = MultiCamPoseStreamer(
         camera_ids=camera_ids,
         calibration_file=str(calibration_file),
         resolution=(1280, 720),
-        enable_display=False  # We handle display in main thread
+        enable_display=False,  # We handle display in main thread
+        world_pitch_correction_deg=world_pitch,
+        world_roll_correction_deg=world_roll,
+        leg_pitch_correction_deg=leg_pitch,
     )
     streamer.start()
     

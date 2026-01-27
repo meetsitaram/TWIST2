@@ -204,9 +204,11 @@ class MotionLib:
         duration = num_frames / fps
         
         # Convert to torch tensors
+        root_pos = torch.tensor(motion["root_pos"], dtype=torch.float32, device=self.device)
+        
         motion_data = {
             "fps": fps,
-            "root_pos": torch.tensor(motion["root_pos"], dtype=torch.float32, device=self.device),
+            "root_pos": root_pos,
             "root_rot": torch.tensor(motion["root_rot"], dtype=torch.float32, device=self.device),
             "dof_pos": torch.tensor(motion["dof_pos"], dtype=torch.float32, device=self.device),
         }

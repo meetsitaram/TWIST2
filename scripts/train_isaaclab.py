@@ -119,9 +119,13 @@ parser.add_argument("--wandb_project", type=str, default="twist2-isaaclab",
 parser.add_argument("--checkpoint", type=str, default=None,
                     help="Path to checkpoint to resume from")
 
-# Robustness training (Stage 2)
+# Robustness training (Stage 2) - push curriculum
 parser.add_argument("--robust", action="store_true",
-                    help="Enable robustness training with push disturbances (use with --checkpoint)")
+                    help="Stage 2 EASY: ±0.5 m/s pushes every 10-15s (use with --checkpoint)")
+parser.add_argument("--robust_medium", action="store_true",
+                    help="Stage 2 MEDIUM: ±0.8 m/s pushes every 8-12s (use with --checkpoint)")
+parser.add_argument("--robust_hard", action="store_true",
+                    help="Stage 2 HARD: ±1.2 m/s pushes every 6-10s (use with --checkpoint)")
 
 # Stage 3: Upper body end-effector tracking
 parser.add_argument("--stage3", action="store_true",
@@ -176,8 +180,16 @@ def main():
         if args.stage3:
             print("[Train] STAGE 3: Upper body end-effector tracking")
             env_cfg = G1MotionMimicEnvCfg_STAGE3()
+        elif args.robust_hard:
+            print("[Train] ROBUST HARD: ±1.2 m/s pushes every 6-10s")
+            from isaaclab_envs.g1_motion_mimic_env_cfg import G1MotionMimicEnvCfg_ROBUST_HARD
+            env_cfg = G1MotionMimicEnvCfg_ROBUST_HARD()
+        elif args.robust_medium:
+            print("[Train] ROBUST MEDIUM: ±0.8 m/s pushes every 8-12s")
+            from isaaclab_envs.g1_motion_mimic_env_cfg import G1MotionMimicEnvCfg_ROBUST_MEDIUM
+            env_cfg = G1MotionMimicEnvCfg_ROBUST_MEDIUM()
         elif args.robust:
-            print("[Train] ROBUSTNESS MODE: Push disturbances ENABLED")
+            print("[Train] ROBUST EASY: ±0.5 m/s pushes every 10-15s")
             env_cfg = G1MotionMimicEnvCfg_ROBUST()
         else:
             env_cfg = G1MotionMimicEnvCfg()

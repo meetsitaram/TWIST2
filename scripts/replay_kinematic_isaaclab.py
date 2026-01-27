@@ -272,24 +272,48 @@ def main():
                 if il_idx is not None and mj_idx < len(frame_dof):
                     full_joint_pos[:, il_idx] = float(frame_dof[mj_idx])
             
-            # Fixed root position (don't use motion root - keep robot in place)
-            # Just use the env origin with a fixed height
+            # Use motion root position if available, else fixed height
             env_origins = isaac_env.scene.env_origins
-            fixed_root_pos = env_origins.clone()
-            fixed_root_pos[:, 2] = 0.78  # Fixed standing height
             
-            # Fixed root orientation (upright, no rotation)
-            fixed_root_quat = torch.tensor(
-                [1.0, 0.0, 0.0, 0.0],  # Identity quaternion [w,x,y,z]
-                dtype=torch.float32, device=isaac_env.device
-            ).unsqueeze(0).expand(args.num_envs, -1)
+            if root_pos is not None:
+                # Use actual motion root height (important for crouching/walking)
+                motion_root = torch.tensor(
+                    root_pos[frame], dtype=torch.float32, device=isaac_env.device
+                ).unsqueeze(0).expand(args.num_envs, -1).clone()
+                # Keep XY from env origin, use Z from motion
+                motion_root[:, 0] = env_origins[:, 0]  # X from env
+                motion_root[:, 1] = env_origins[:, 1]  # Y from env
+                # Apply small offset to put feet on ground
+                # MuJoCo feet at ~0m, Isaac Lab feet at ~0.07m for same root
+                # Lower by 0.02m to put ankles at ~0.05m (ground contact)
+                motion_root[:, 2] -= 0.02
+                actual_root_pos = motion_root
+            else:
+                # Fallback: fixed height
+                actual_root_pos = env_origins.clone()
+                actual_root_pos[:, 2] = 0.78
+            
+            # Use motion root orientation if available
+            if root_rot is not None:
+                # Motion uses [qx, qy, qz, qw], Isaac Lab uses [w, x, y, z]
+                quat_xyzw = root_rot[frame]  # scalar-last
+                actual_root_quat = torch.tensor(
+                    [quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]],  # Convert to [w,x,y,z]
+                    dtype=torch.float32, device=isaac_env.device
+                ).unsqueeze(0).expand(args.num_envs, -1)
+            else:
+                # Fallback: identity quaternion
+                actual_root_quat = torch.tensor(
+                    [1.0, 0.0, 0.0, 0.0],
+                    dtype=torch.float32, device=isaac_env.device
+                ).unsqueeze(0).expand(args.num_envs, -1)
             
             # Step simulation first (for rendering pipeline)
             isaac_env.sim.step(render=False)
             
             # AFTER physics step, override with our kinematic pose
             # This ensures our values aren't overwritten by physics
-            root_pose = torch.cat([fixed_root_pos, fixed_root_quat], dim=-1)
+            root_pose = torch.cat([actual_root_pos, actual_root_quat], dim=-1)
             robot.write_root_pose_to_sim(root_pose)
             
             # Also set root velocity to zero to prevent drift
@@ -308,27 +332,32 @@ def main():
             # Update robot data
             robot.update(isaac_env.sim.cfg.dt)
             
-            # Debug print - verify joints are being set
+            # Debug print - verify joints and foot positions
             if frame != last_print_frame and frame % 30 == 0:
                 last_print_frame = frame
                 progress = frame / num_frames * 100
                 
-                # Read back actual joint positions
+                # Read back actual positions
                 actual_joints = robot.data.joint_pos[0].cpu().numpy()
+                body_pos = robot.data.body_pos_w[0].cpu().numpy()  # (num_bodies, 3)
+                root_z = actual_root_pos[0, 2].item()
                 
-                # Check a mapped joint: left_shoulder_pitch (MuJoCo idx 15 -> Isaac Lab idx)
-                mj_shoulder_idx = 15  # left_shoulder_pitch in motion data
-                il_shoulder_idx = joint_mapping.get(mj_shoulder_idx)
+                # Find ankle body indices
+                body_names = robot.body_names
+                left_ankle_z = None
+                right_ankle_z = None
+                for i, name in enumerate(body_names):
+                    if name == "left_ankle_roll_link":
+                        left_ankle_z = body_pos[i, 2]
+                    elif name == "right_ankle_roll_link":
+                        right_ankle_z = body_pos[i, 2]
                 
-                if il_shoulder_idx is not None:
-                    target_val = frame_dof[mj_shoulder_idx]
-                    actual_val = actual_joints[il_shoulder_idx]
-                    diff = abs(target_val - actual_val)
-                    
-                    print(f"\r[Frame {frame:4d}/{num_frames}] "
-                          f"L_shoulder_pitch: target={target_val:6.3f}, "
-                          f"actual={actual_val:6.3f}, "
-                          f"diff={diff:.4f}", end="", flush=True)
+                if left_ankle_z is not None and right_ankle_z is not None:
+                    print(f"\r[Frame {frame:4d}] Root Z: {root_z:.3f}m, "
+                          f"L_ankle Z: {left_ankle_z:.3f}m, "
+                          f"R_ankle Z: {right_ankle_z:.3f}m", end="", flush=True)
+                else:
+                    print(f"\r[Frame {frame:4d}] Root Z: {root_z:.3f}m", end="", flush=True)
             
             # Small delay
             time.sleep(0.01)

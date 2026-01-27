@@ -151,12 +151,24 @@ class EpisodeToMotionConverter:
         output_dir = output_dir or MOTION_OUTPUT_DIR
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Find episode file
-        episode_dir = EPISODES_DIR / episode_name
-        episode_path = episode_dir / f"{episode_name}.npz"
+        # Find episode file - search in multiple locations
+        episode_path = None
         
-        if not episode_path.exists():
-            raise FileNotFoundError(f"Episode not found: {episode_path}")
+        # Try direct path first
+        direct_path = EPISODES_DIR / episode_name / f"{episode_name}.npz"
+        if direct_path.exists():
+            episode_path = direct_path
+        else:
+            # Search in stage subdirectories
+            for stage_dir in EPISODES_DIR.iterdir():
+                if stage_dir.is_dir():
+                    nested_path = stage_dir / episode_name / f"{episode_name}.npz"
+                    if nested_path.exists():
+                        episode_path = nested_path
+                        break
+        
+        if episode_path is None:
+            raise FileNotFoundError(f"Episode not found: {episode_name} (searched in {EPISODES_DIR})")
         
         print(f"\nConverting: {episode_name}")
         
@@ -225,17 +237,23 @@ class EpisodeToMotionConverter:
     
     @staticmethod
     def list_episodes() -> List[str]:
-        """List all available episode names."""
+        """List all available episode names (searches recursively in stage folders)."""
         if not EPISODES_DIR.exists():
             return []
         
         episodes = []
-        for d in sorted(EPISODES_DIR.iterdir()):
-            if d.is_dir():
-                npz_file = d / f"{d.name}.npz"
-                if npz_file.exists():
-                    episodes.append(d.name)
         
+        def find_in_dir(search_dir: Path):
+            for d in sorted(search_dir.iterdir()):
+                if d.is_dir():
+                    npz_file = d / f"{d.name}.npz"
+                    if npz_file.exists():
+                        episodes.append(d.name)
+                    else:
+                        # Could be a stage folder, recurse
+                        find_in_dir(d)
+        
+        find_in_dir(EPISODES_DIR)
         return episodes
     
     @staticmethod

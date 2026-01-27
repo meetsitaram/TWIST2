@@ -1,0 +1,11 @@
+# TWIST2 Motion Dataset Config
+# Generated from teleop episodes
+# Config: push_balance
+
+root_path: /home/stickbot/projects/g1-pick-n-place/TWIST2/datasets/teleop_motions/push_balance
+
+motions:
+  - file: push_001.pkl
+    weight: 1.0
+  - file: push_002.pkl
+    weight: 1.0

@@ -305,13 +305,18 @@ class G1MotionMimicEnvCfg(G1FlatEnvCfg):
 
 @configclass
 class G1MotionMimicEnvCfg_ROBUST(G1MotionMimicEnvCfg):
-    """Stage 2: Robustness training with push disturbances.
+    """Stage 2: Robustness training with push disturbances (EASY level).
     
     Use this config after the robot has learned basic motion skills.
     Enables random push disturbances to improve stability.
     
+    Push Curriculum:
+        --robust        : ±0.5 m/s every 10-15s (EASY, default)
+        --robust_medium : ±0.8 m/s every 8-12s  (MEDIUM)
+        --robust_hard   : ±1.2 m/s every 6-10s  (HARD)
+    
     Usage:
-        python scripts/train_isaaclab.py --robust --resume logs/.../model_5000.pt
+        python scripts/train_isaaclab.py --robust --checkpoint logs/.../model_5000.pt
     """
     
     def __post_init__(self):
@@ -324,17 +329,75 @@ class G1MotionMimicEnvCfg_ROBUST(G1MotionMimicEnvCfg):
         self.events.push_robot = EventTermCfg(
             func=mdp_events.push_by_setting_velocity,
             mode="interval",
-            interval_range_s=(6.0, 10.0),  # Push every 6-10 seconds (more frequent)
+            interval_range_s=(10.0, 15.0),  # EASY: push every 10-15 seconds
             params={
                 "velocity_range": {
-                    "x": (-1.2, 1.2),  # Stronger pushes for stable robot
-                    "y": (-1.2, 1.2),
+                    "x": (-0.5, 0.5),  # EASY: gentle pushes
+                    "y": (-0.5, 0.5),
                 }
             },
         )
         
         # Optionally enable mass randomization for extra robustness
         # self.events.add_base_mass = EventTermCfg(...)
+
+
+@configclass
+class G1MotionMimicEnvCfg_ROBUST_MEDIUM(G1MotionMimicEnvCfg):
+    """Stage 2b: Medium push disturbances.
+    
+    Use after robot is stable with EASY pushes (~10-15k iterations).
+    
+    Usage:
+        python scripts/train_isaaclab.py --robust_medium --checkpoint logs/.../model_15000.pt
+    """
+    
+    def __post_init__(self):
+        super().__post_init__()
+        
+        from isaaclab.managers import EventTermCfg
+        from isaaclab.envs.mdp import events as mdp_events
+        
+        self.events.push_robot = EventTermCfg(
+            func=mdp_events.push_by_setting_velocity,
+            mode="interval",
+            interval_range_s=(8.0, 12.0),  # MEDIUM: push every 8-12 seconds
+            params={
+                "velocity_range": {
+                    "x": (-0.8, 0.8),  # MEDIUM: moderate pushes
+                    "y": (-0.8, 0.8),
+                }
+            },
+        )
+
+
+@configclass
+class G1MotionMimicEnvCfg_ROBUST_HARD(G1MotionMimicEnvCfg):
+    """Stage 2c: Hard push disturbances for deployment-ready robustness.
+    
+    Use after robot is stable with MEDIUM pushes (~25-30k iterations).
+    
+    Usage:
+        python scripts/train_isaaclab.py --robust_hard --checkpoint logs/.../model_30000.pt
+    """
+    
+    def __post_init__(self):
+        super().__post_init__()
+        
+        from isaaclab.managers import EventTermCfg
+        from isaaclab.envs.mdp import events as mdp_events
+        
+        self.events.push_robot = EventTermCfg(
+            func=mdp_events.push_by_setting_velocity,
+            mode="interval",
+            interval_range_s=(6.0, 10.0),  # HARD: push every 6-10 seconds
+            params={
+                "velocity_range": {
+                    "x": (-1.2, 1.2),  # HARD: strong pushes
+                    "y": (-1.2, 1.2),
+                }
+            },
+        )
 
 
 ##############################################################################

@@ -285,17 +285,26 @@ def align_skeleton_upright(skeleton: np.ndarray) -> np.ndarray:
     return skeleton
 
 
-def extract_human_end_effectors(skeleton_3d: np.ndarray) -> dict:
+def extract_human_end_effectors(skeleton_3d: np.ndarray, return_raw_pelvis: bool = False) -> dict:
     """
     Extract 5 end-effector positions and orientations from MediaPipe skeleton.
     
     Returns:
         dict with 'left_hand', 'right_hand', 'left_foot', 'right_foot', 'torso'
         Each entry has 'position' (3D), 'orientation' (quaternion wxyz), 'R_mat' (3x3)
+        Also includes 'raw_pelvis_xy' if return_raw_pelvis=True (for XY tracking)
         
     Returns None if skeleton has invalid/NaN data.
     """
     skeleton_arr = np.array(skeleton_3d)
+    
+    # Get raw pelvis position BEFORE alignment (for XY tracking)
+    raw_pelvis = None
+    if return_raw_pelvis:
+        l_hip = skeleton_arr[MP_LEFT_HIP]
+        r_hip = skeleton_arr[MP_RIGHT_HIP]
+        if not np.any(np.isnan(l_hip)) and not np.any(np.isnan(r_hip)):
+            raw_pelvis = (l_hip + r_hip) / 2
     
     # Check for NaN in critical landmarks
     critical_landmarks = [
@@ -467,7 +476,7 @@ def extract_human_end_effectors(skeleton_3d: np.ndarray) -> dict:
     r_shin = np.linalg.norm(skeleton[MP_RIGHT_ANKLE] - skeleton[MP_RIGHT_KNEE])
     leg_length = ((l_thigh + l_shin) + (r_thigh + r_shin)) / 2
     
-    return {
+    result = {
         'end_effectors': end_effectors,
         'pelvis': pelvis,
         'height': height,
@@ -475,6 +484,12 @@ def extract_human_end_effectors(skeleton_3d: np.ndarray) -> dict:
         'leg_length': leg_length,
         'skeleton': skeleton,
     }
+    
+    # Add raw pelvis for XY tracking if requested
+    if return_raw_pelvis and raw_pelvis is not None:
+        result['raw_pelvis_xy'] = raw_pelvis[:2].copy()  # Just X and Y
+    
+    return result
 
 
 class EndEffectorIKRetargeter:
@@ -493,6 +508,19 @@ class EndEffectorIKRetargeter:
         position_weight: float = 1.0,
         orientation_weight: float = 0.5,
         verbose: bool = True,
+        # Foot Z clamping settings (configurable for different modes)
+        foot_z_clamp_enabled: bool = True,
+        foot_z_min: float = 0.02,   # Minimum foot Z (ankle above ground)
+        foot_z_max: float = 0.30,   # Maximum foot Z (allow raised feet)
+        # Ground clearance - height of ankle joint above floor when foot is on ground
+        ground_clearance: float = 0.08,  # Increased from 0.05 to prevent buried feet
+        # XY movement settings
+        allow_xy_movement: bool = False,  # Allow robot to move in XY plane
+        max_xy_distance: float = 2.0,     # Maximum distance from origin (meters)
+        # Isaac Lab FK compensation offset
+        # MuJoCo legs are ~5cm longer than Isaac Lab for same joint angles
+        # Set to -0.05 when preparing data for Isaac Lab training
+        isaac_lab_z_offset: float = 0.0,
     ):
         if not HAS_MINK or not HAS_MUJOCO:
             raise RuntimeError("mink and mujoco are required. Install with: pip install mink mujoco")
@@ -503,6 +531,19 @@ class EndEffectorIKRetargeter:
         self.position_weight = position_weight
         self.orientation_weight = orientation_weight
         self.verbose = verbose
+        
+        # Foot Z clamping configuration
+        self.foot_z_clamp_enabled = foot_z_clamp_enabled
+        self.foot_z_min = foot_z_min
+        self.foot_z_max = foot_z_max
+        self.ground_clearance = ground_clearance
+        self.isaac_lab_z_offset = isaac_lab_z_offset
+        
+        # XY movement configuration
+        self.allow_xy_movement = allow_xy_movement
+        self.max_xy_distance = max_xy_distance
+        self.initial_human_pelvis_xy = None  # Track initial human position for XY offset
+        self.robot_base_xy = np.array([0.0, 0.0])  # Current robot base XY
         
         # Load robot model
         if model_path is None:
@@ -523,11 +564,22 @@ class EndEffectorIKRetargeter:
         if verbose:
             print(f"[IK] Robot height: {self.robot_height:.3f}m")
             print(f"[IK] End-effector bodies: {list(ROBOT_EE_BODIES.keys())}")
+            print(f"[IK] Ground clearance: {self.ground_clearance:.2f}m")
+            if self.foot_z_clamp_enabled:
+                print(f"[IK] Foot Z clamping: [{self.foot_z_min:.2f}, {self.foot_z_max:.2f}]m")
+            else:
+                print(f"[IK] Foot Z clamping: DISABLED")
+            if self.allow_xy_movement:
+                print(f"[IK] XY movement: ENABLED (max {self.max_xy_distance:.1f}m from origin)")
+            else:
+                print(f"[IK] XY movement: DISABLED (fixed at origin)")
+            if abs(self.isaac_lab_z_offset) > 0.001:
+                print(f"[IK] Isaac Lab Z offset: {self.isaac_lab_z_offset:.3f}m")
     
     def _compute_robot_height(self):
         """Compute robot dimensions from default pose including limb lengths."""
         mujoco.mj_resetData(self.model, self.data)
-        self.data.qpos[2] = 0.75  # Base height
+        self.data.qpos[2] = 0.80  # Base height (puts ankles at ~0.043m above ground)
         self.data.qpos[3] = 1.0   # Quaternion w (upright)
         mujoco.mj_forward(self.model, self.data)
         
@@ -708,10 +760,11 @@ class EndEffectorIKRetargeter:
         
         self.posture_task = mink.PostureTask(model=self.model, cost=costs)
         
-        # Default standing pose as target
+        # Default standing pose as target (arms down)
         default_qpos = np.zeros(self.model.nq)
-        default_qpos[2] = 0.75  # Standing height
+        default_qpos[2] = 0.80  # Standing height (ankles at ~0.043m)
         default_qpos[3] = 1.0   # Quaternion w (upright)
+        # Arms are already at 0 (down) from np.zeros
         self.posture_task.set_target(default_qpos)
     
     def _setup_waist_constraints(self):
@@ -762,11 +815,44 @@ class EndEffectorIKRetargeter:
             print(f"[IK] Base freezing constraint: DOFs {base_dof_indices}")
     
     def reset_to_default(self):
-        """Reset robot to default standing pose."""
+        """Reset robot to default standing pose (from config or fallback)."""
         mujoco.mj_resetData(self.model, self.configuration.data)
-        self.configuration.data.qpos[2] = 0.75  # Height
+        
+        # Try to load custom default pose from config
+        default_pose_file = Path(__file__).parent.parent / "calibration" / "default_pose.yaml"
+        
+        if default_pose_file.exists():
+            import yaml
+            with open(default_pose_file) as f:
+                config = yaml.safe_load(f)
+            
+            if config and 'default_pose' in config:
+                pose = config['default_pose']
+                
+                # Set pelvis height
+                self.configuration.data.qpos[2] = pose.get('pelvis_height', 0.80)
+                self.configuration.data.qpos[3] = 1.0  # Quaternion w (upright)
+                
+                # Set joint angles
+                joint_angles = pose.get('joint_angles_rad', {})
+                for idx, joint_name in enumerate(JOINT_ORDER):
+                    if joint_name in joint_angles:
+                        self.configuration.data.qpos[7 + idx] = joint_angles[joint_name]
+                
+                mujoco.mj_forward(self.model, self.configuration.data)
+                return
+        
+        # Fallback: basic default pose
+        self.configuration.data.qpos[2] = 0.80  # Height (ankles at ~0.043m)
         self.configuration.data.qpos[3] = 1.0   # Quaternion w
+        # All joints at 0 (from mj_resetData)
+        
         mujoco.mj_forward(self.model, self.configuration.data)
+    
+    def reset_xy_tracking(self):
+        """Reset XY tracking to current position (re-centers the robot)."""
+        self.initial_human_pelvis_xy = None
+        self.robot_base_xy = np.array([0.0, 0.0])
     
     def retarget(
         self,
@@ -837,9 +923,12 @@ class EndEffectorIKRetargeter:
             right_foot_rel_z = ee_data['right_foot']['position'][2] * leg_scale
             min_foot_rel_z = min(left_foot_rel_z, right_foot_rel_z)
             
-            ground_clearance = 0.05  # Approximate ankle height above ground
-            robot_pelvis_z = ground_clearance - min_foot_rel_z
+            robot_pelvis_z = self.ground_clearance - min_foot_rel_z
             robot_pelvis_z = np.clip(robot_pelvis_z, 0.3, 0.9)
+            
+            # Apply Isaac Lab FK compensation if configured
+            # This lowers the pelvis to account for Isaac Lab having shorter effective legs
+            robot_pelvis_z += self.isaac_lab_z_offset
         
         # Update base height in qpos
         self.configuration.data.qpos[2] = robot_pelvis_z
@@ -874,10 +963,9 @@ class EndEffectorIKRetargeter:
             # Convert to world coordinates by adding robot pelvis position
             target_pos = robot_pos_rel + robot_pelvis_world
             
-            # For feet: clamp Z to ground level (ankle height)
-            if 'foot' in ee_name:
-                target_pos[2] = max(target_pos[2], 0.02)  # Ankle just above ground
-                target_pos[2] = min(target_pos[2], 0.10)  # Max ankle height when grounded
+            # For feet: optionally clamp Z to configurable range
+            if 'foot' in ee_name and self.foot_z_clamp_enabled:
+                target_pos[2] = np.clip(target_pos[2], self.foot_z_min, self.foot_z_max)
             
             # Get orientation quaternion
             target_quat = ee_info['orientation']  # [w, x, y, z]
@@ -937,12 +1025,22 @@ class EndEffectorIKRetargeter:
         # Extract joint angles
         qpos = self.configuration.data.qpos.copy()
         
-        # Fix root X/Y to 0 (we don't want base drift during standing teleop)
-        qpos[0] = 0.0  # X position
-        qpos[1] = 0.0  # Y position
+        # Handle XY position
+        if self.allow_xy_movement:
+            # Allow movement but clamp to max distance from origin
+            xy_dist = np.sqrt(qpos[0]**2 + qpos[1]**2)
+            if xy_dist > self.max_xy_distance:
+                scale = self.max_xy_distance / xy_dist
+                qpos[0] *= scale
+                qpos[1] *= scale
+        else:
+            # Fix root X/Y to 0 (standing in place)
+            qpos[0] = 0.0  # X position
+            qpos[1] = 0.0  # Y position
+        
         # qpos[2] is Z height - enforce fixed height if fixed_base was requested
         if fixed_base:
-            qpos[2] = 0.75  # Fixed standing height
+            qpos[2] = 0.80  # Fixed standing height (ankles at ~0.043m)
         # qpos[3:7] is quaternion - keep base orientation upright
         qpos[3] = 1.0  # w
         qpos[4] = 0.0  # x
@@ -999,8 +1097,8 @@ class EndEffectorIKRetargeter:
         Returns:
             dict with joint angles, qpos, error, etc.
         """
-        # Extract human end-effectors
-        human_data = extract_human_end_effectors(skeleton_3d)
+        # Extract human end-effectors (with raw pelvis for XY tracking)
+        human_data = extract_human_end_effectors(skeleton_3d, return_raw_pelvis=self.allow_xy_movement)
         
         if human_data is None:
             if self.verbose:
@@ -1014,6 +1112,18 @@ class EndEffectorIKRetargeter:
             }
         
         ee_data = human_data['end_effectors']
+        
+        # XY tracking: compute offset from initial position
+        if self.allow_xy_movement and 'raw_pelvis_xy' in human_data:
+            raw_pelvis_xy = human_data['raw_pelvis_xy']
+            if self.initial_human_pelvis_xy is None:
+                # First frame - store initial position
+                self.initial_human_pelvis_xy = raw_pelvis_xy.copy()
+                if self.verbose:
+                    print(f"[IK] XY tracking: initial position = ({raw_pelvis_xy[0]:.3f}, {raw_pelvis_xy[1]:.3f})")
+            
+            # Compute offset from initial position
+            human_xy_offset = raw_pelvis_xy - self.initial_human_pelvis_xy
         
         if human_height is None:
             human_height = human_data['height']
@@ -1042,7 +1152,7 @@ class EndEffectorIKRetargeter:
             print(f"\n[Stage 1] Upper Body IK (fixed base)")
         
         # Fixed pelvis height for Stage 1
-        stage1_pelvis_z = 0.75
+        stage1_pelvis_z = 0.80  # Default standing height (ankles at ~0.043m)
         self.configuration.data.qpos[2] = stage1_pelvis_z
         mujoco.mj_forward(self.model, self.configuration.data)
         
@@ -1164,9 +1274,12 @@ class EndEffectorIKRetargeter:
         min_foot_rel_z = min(left_foot_rel_z, right_foot_rel_z)
         
         # Pelvis height = ground clearance - lowest foot relative Z
-        ground_clearance = 0.05  # Ankle height above ground
-        stage2_pelvis_z = ground_clearance - min_foot_rel_z
+        stage2_pelvis_z = self.ground_clearance - min_foot_rel_z
         stage2_pelvis_z = np.clip(stage2_pelvis_z, 0.4, 0.85)
+        
+        # Apply Isaac Lab FK compensation if configured
+        # This lowers the pelvis to account for Isaac Lab having shorter effective legs
+        stage2_pelvis_z += self.isaac_lab_z_offset
         
         if self.verbose:
             print(f"    Pelvis Z: {stage1_pelvis_z:.3f} → {stage2_pelvis_z:.3f}")
@@ -1186,10 +1299,9 @@ class EndEffectorIKRetargeter:
             robot_pos_rel = human_pos_rel * leg_scale
             target_pos = robot_pos_rel + robot_pelvis_world
             
-            # Clamp foot Z to ground level (but not knees)
-            if 'foot' in ee_name:
-                target_pos[2] = max(target_pos[2], 0.02)
-                target_pos[2] = min(target_pos[2], 0.15)
+            # Optionally clamp foot Z to configurable range (but not knees)
+            if 'foot' in ee_name and self.foot_z_clamp_enabled:
+                target_pos[2] = np.clip(target_pos[2], self.foot_z_min, self.foot_z_max)
             
             target_quat = ee_info['orientation']
             rotation = mink.SO3(target_quat)
@@ -1263,9 +1375,26 @@ class EndEffectorIKRetargeter:
         # =====================================================================
         qpos = self.configuration.data.qpos.copy()
         
-        # Fix base XY to 0 and ensure upright orientation
-        qpos[0] = 0.0  # X
-        qpos[1] = 0.0  # Y
+        # Handle XY position
+        if self.allow_xy_movement and 'raw_pelvis_xy' in human_data:
+            # Apply scaled human XY offset to robot base
+            human_xy_offset = human_data['raw_pelvis_xy'] - self.initial_human_pelvis_xy
+            robot_xy_offset = human_xy_offset * height_scale
+            
+            self.robot_base_xy = robot_xy_offset
+            
+            # Clamp to max distance from origin
+            xy_dist = np.linalg.norm(self.robot_base_xy)
+            if xy_dist > self.max_xy_distance:
+                self.robot_base_xy = self.robot_base_xy * (self.max_xy_distance / xy_dist)
+            
+            qpos[0] = self.robot_base_xy[0]
+            qpos[1] = self.robot_base_xy[1]
+        else:
+            # Fix base XY to 0 (standing in place)
+            qpos[0] = 0.0  # X
+            qpos[1] = 0.0  # Y
+        
         # qpos[2] is Z height from Stage 2
         qpos[3] = 1.0  # quat w
         qpos[4] = 0.0  # quat x

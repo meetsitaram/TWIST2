@@ -3,6 +3,11 @@
 #
 # Regenerate with: python deploy_real/setup_cameras.py
 
+# Skeleton corrections (calibrated 2026-01-26)
+# leg_pitch_correction_deg: rotates legs around pelvis
+#   positive = legs forward, negative = legs backward
+leg_pitch_correction_deg: -10.0
+
 capture:
   resolution:
   - 1280

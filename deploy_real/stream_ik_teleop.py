@@ -50,7 +50,7 @@ project_root = os.path.dirname(script_dir)
 sys.path.insert(0, project_root)
 
 from deploy_real.multicam_pose_streamer import MultiCamPoseStreamer
-from deploy_real.end_effector_ik_retarget import EndEffectorIKRetargeter, ROBOT_MODEL_PATH
+from deploy_real.end_effector_ik_retarget import EndEffectorIKRetargeter, ROBOT_MODEL_PATH, JOINT_ORDER
 from deploy_real.teleop_episode_recorder import TeleopEpisodeRecorder, EPISODES_DIR
 from deploy_real.data_utils.fps_monitor import FPSMonitor
 
@@ -76,11 +76,21 @@ class IKTeleopStreamer:
         record: bool = False,
         record_duration: float = 60.0,
         record_name: str = None,
+        record_stage: str = None,
         record_video: bool = False,
         skeleton_smoothing: str = "none",
         smoothing_min_cutoff: float = 1.0,
         smoothing_beta: float = 0.007,
         two_stage: bool = False,
+        # IK foot/pelvis settings (configurable for better motion capture)
+        foot_z_clamp: bool = True,
+        foot_z_min: float = 0.02,
+        foot_z_max: float = 0.30,
+        ground_clearance: float = 0.08,
+        isaac_lab_offset: float = 0.0,
+        # XY movement settings
+        allow_xy_movement: bool = False,
+        max_xy_distance: float = 2.0,
     ):
         self.target_fps = target_fps
         self.verbose = verbose
@@ -101,11 +111,17 @@ class IKTeleopStreamer:
                     "beta": smoothing_beta,
                 }
             
+            # Determine output directory (with optional stage subfolder)
+            output_dir = EPISODES_DIR
+            if record_stage:
+                output_dir = EPISODES_DIR / record_stage
+            
             self.recorder = TeleopEpisodeRecorder(
                 name=record_name,
                 fps=target_fps,
                 smoothing=skeleton_smoothing,
                 smoothing_params=smoothing_params,
+                output_dir=output_dir,
                 record_video=record_video,
                 camera_ids=camera_ids if record_video else None,
             )
@@ -114,6 +130,25 @@ class IKTeleopStreamer:
         print(f"[IK Teleop] Initializing cameras: {camera_ids}")
         smoothing_label = skeleton_smoothing if skeleton_smoothing != "none" else "disabled"
         print(f"[IK Teleop] Skeleton smoothing: {smoothing_label}")
+        
+        # Load world frame correction from calibration config
+        world_pitch = 0.0
+        world_roll = 0.0
+        leg_pitch = 0.0
+        calibration_dir = Path(calibration_file).parent
+        config_file = calibration_dir / "camera_config.yaml"
+        if config_file.exists():
+            import yaml
+            with open(config_file) as f:
+                cam_config = yaml.safe_load(f)
+            world_pitch = cam_config.get('world_pitch_correction_deg', 0.0)
+            world_roll = cam_config.get('world_roll_correction_deg', 0.0)
+            leg_pitch = cam_config.get('leg_pitch_correction_deg', 0.0)
+            if abs(world_pitch) > 0.1 or abs(world_roll) > 0.1:
+                print(f"[IK Teleop] World frame correction: pitch={world_pitch}°, roll={world_roll}°")
+            if abs(leg_pitch) > 0.1:
+                print(f"[IK Teleop] Leg pitch correction: {leg_pitch}°")
+        
         self.camera_streamer = MultiCamPoseStreamer(
             camera_ids=camera_ids,
             calibration_file=calibration_file,
@@ -122,15 +157,38 @@ class IKTeleopStreamer:
             skeleton_smoothing=skeleton_smoothing,
             smoothing_min_cutoff=smoothing_min_cutoff,
             smoothing_beta=smoothing_beta,
+            world_pitch_correction_deg=world_pitch,
+            world_roll_correction_deg=world_roll,
+            leg_pitch_correction_deg=leg_pitch,
         )
         
-        # Initialize IK retargeter
+        # Initialize IK retargeter with configurable settings
         mode_str = "two-stage (whole body)" if two_stage else "single-stage (upper body)"
         print(f"[IK Teleop] Initializing IK retargeter ({mode_str})...")
         self.retargeter = EndEffectorIKRetargeter(
             verbose=False,
             max_iterations=30,  # Fewer iterations for real-time
+            foot_z_clamp_enabled=foot_z_clamp,
+            foot_z_min=foot_z_min,
+            foot_z_max=foot_z_max,
+            ground_clearance=ground_clearance,
+            isaac_lab_z_offset=isaac_lab_offset,
+            allow_xy_movement=allow_xy_movement,
+            max_xy_distance=max_xy_distance,
         )
+        
+        # Log IK settings
+        print(f"[IK Teleop] Ground clearance: {ground_clearance:.2f}m")
+        if foot_z_clamp:
+            print(f"[IK Teleop] Foot Z clamping: [{foot_z_min:.2f}, {foot_z_max:.2f}]m")
+        else:
+            print(f"[IK Teleop] Foot Z clamping: DISABLED")
+        if allow_xy_movement:
+            print(f"[IK Teleop] XY movement: ENABLED (max {max_xy_distance:.1f}m)")
+        else:
+            print(f"[IK Teleop] XY movement: DISABLED (fixed at origin)")
+        if abs(isaac_lab_offset) > 0.001:
+            print(f"[IK Teleop] Isaac Lab Z offset: {isaac_lab_offset:.3f}m")
         
         # Initialize MuJoCo model for visualization
         print(f"[IK Teleop] Loading robot model: {ROBOT_MODEL_PATH}")
@@ -164,10 +222,38 @@ class IKTeleopStreamer:
         self.prev_qpos = None  # For velocity limiting
         
     def _set_default_pose(self):
-        """Set robot to default standing pose."""
+        """Set robot to default standing pose (from config or fallback)."""
         mujoco.mj_resetData(self.model, self.data)
-        self.data.qpos[2] = 0.75  # Base height
+        
+        # Try to load custom default pose from config
+        default_pose_file = Path(__file__).parent.parent / "calibration" / "default_pose.yaml"
+        
+        if default_pose_file.exists():
+            import yaml
+            with open(default_pose_file) as f:
+                config = yaml.safe_load(f)
+            
+            if config and 'default_pose' in config:
+                pose = config['default_pose']
+                
+                # Set pelvis height
+                self.data.qpos[2] = pose.get('pelvis_height', 0.80)
+                self.data.qpos[3] = 1.0  # Quaternion w (upright)
+                
+                # Set joint angles
+                joint_angles = pose.get('joint_angles_rad', {})
+                for idx, joint_name in enumerate(JOINT_ORDER):
+                    if joint_name in joint_angles:
+                        self.data.qpos[7 + idx] = joint_angles[joint_name]
+                
+                mujoco.mj_forward(self.model, self.data)
+                return
+        
+        # Fallback: basic default pose
+        self.data.qpos[2] = 0.80  # Base height
         self.data.qpos[3] = 1.0   # Quaternion w (upright)
+        # All joints at 0 (from mj_resetData)
+        
         mujoco.mj_forward(self.model, self.data)
         
     def _velocity_limit_qpos(self, qpos: np.ndarray) -> np.ndarray:
@@ -477,13 +563,43 @@ def replay_episode(
     """
     from mujoco.viewer import launch_passive
     
-    # Load episode
-    # Episodes are stored in subdirectories: EPISODES_DIR/episode_name/episode_name.npz
-    filepath = EPISODES_DIR / episode_name / f"{episode_name}.npz"
-    if not filepath.exists():
-        # Try old format (flat directory) for backward compatibility
-        filepath = EPISODES_DIR / f"{episode_name}.npz"
-    if not filepath.exists():
+    # Load episode - search in multiple locations
+    # 1. Stage/name format: EPISODES_DIR/stage/name/name.npz
+    # 2. Direct: EPISODES_DIR/episode_name/episode_name.npz
+    # 3. Stage folders: EPISODES_DIR/stage_folder/episode_name/episode_name.npz
+    # 4. Old format: EPISODES_DIR/episode_name.npz
+    
+    filepath = None
+    
+    # Check if episode_name includes stage (e.g., "baby_steps/steps_001")
+    if "/" in episode_name:
+        stage, name = episode_name.rsplit("/", 1)
+        stage_path = EPISODES_DIR / stage / name / f"{name}.npz"
+        if stage_path.exists():
+            filepath = stage_path
+    
+    # Try direct path first
+    if filepath is None:
+        direct_path = EPISODES_DIR / episode_name / f"{episode_name}.npz"
+        if direct_path.exists():
+            filepath = direct_path
+    
+    # Search in stage subdirectories
+    if filepath is None:
+        for stage_dir in EPISODES_DIR.iterdir():
+            if stage_dir.is_dir():
+                nested_path = stage_dir / episode_name / f"{episode_name}.npz"
+                if nested_path.exists():
+                    filepath = nested_path
+                    break
+    
+    # Try old flat format
+    if filepath is None:
+        flat_path = EPISODES_DIR / f"{episode_name}.npz"
+        if flat_path.exists():
+            filepath = flat_path
+    
+    if filepath is None:
         print(f"Episode not found: {episode_name}")
         print(f"Looking in: {EPISODES_DIR}")
         list_episodes()
@@ -648,6 +764,12 @@ Examples:
     # Record with two-stage IK (whole body)
     python stream_ik_teleop.py --record --name wholebody_001 --duration 30 --two-stage
     
+    # Record with Isaac Lab compensation (for training)
+    python stream_ik_teleop.py --record --name isaaclab_001 --two-stage --isaac-lab-offset -0.05
+    
+    # Record without foot Z clamping (allow feet at any height)
+    python stream_ik_teleop.py --record --name unclamped_001 --two-stage --no-foot-clamp
+    
     # Record with video
     python stream_ik_teleop.py --record --name baseline_001 --video
     
@@ -694,6 +816,8 @@ Examples:
                        help="Recording duration in seconds (default: 60)")
     parser.add_argument("--name", "-n", type=str, default=None,
                        help="Episode name (default: auto-generated)")
+    parser.add_argument("--stage", "-S", type=str, default=None,
+                       help="Stage folder for organizing episodes (e.g., 'stage1', 'stage2_walk')")
     parser.add_argument("--video", action="store_true",
                        help="Record/show video (for record or replay)")
     
@@ -709,6 +833,24 @@ Examples:
     # IK mode options
     parser.add_argument("--two-stage", "-2", action="store_true",
                        help="Use two-stage IK (whole body: upper body first, then lower body)")
+    
+    # IK foot/pelvis settings (for fixing floating legs issue)
+    parser.add_argument("--no-foot-clamp", action="store_true",
+                       help="Disable foot Z clamping (allow feet at any height)")
+    parser.add_argument("--foot-z-min", type=float, default=0.02,
+                       help="Minimum foot Z position in meters (default: 0.02)")
+    parser.add_argument("--foot-z-max", type=float, default=0.30,
+                       help="Maximum foot Z position in meters (default: 0.30)")
+    parser.add_argument("--ground-clearance", type=float, default=0.08,
+                       help="Ankle height above ground in meters (default: 0.08)")
+    parser.add_argument("--isaac-lab-offset", type=float, default=0.0,
+                       help="Z offset for Isaac Lab FK compensation, e.g. -0.05 (default: 0.0)")
+    
+    # XY movement settings
+    parser.add_argument("--allow-xy", action="store_true",
+                       help="Allow robot to move in XY plane (default: fixed at origin)")
+    parser.add_argument("--max-xy", type=float, default=2.0,
+                       help="Maximum XY distance from origin in meters (default: 2.0)")
     
     args = parser.parse_args()
     
@@ -749,11 +891,21 @@ Examples:
         record=args.record,
         record_duration=args.duration,
         record_name=args.name,
+        record_stage=args.stage,
         record_video=args.video,
         skeleton_smoothing=args.smoothing,
         smoothing_min_cutoff=args.smooth_cutoff,
         smoothing_beta=args.smooth_beta,
         two_stage=args.two_stage,
+        # IK foot/pelvis settings
+        foot_z_clamp=not args.no_foot_clamp,
+        foot_z_min=args.foot_z_min,
+        foot_z_max=args.foot_z_max,
+        ground_clearance=args.ground_clearance,
+        isaac_lab_offset=args.isaac_lab_offset,
+        # XY movement settings
+        allow_xy_movement=args.allow_xy,
+        max_xy_distance=args.max_xy,
     )
     
     streamer.run()

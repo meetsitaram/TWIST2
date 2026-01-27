@@ -1,0 +1,32 @@
+default_pose:
+  joint_angles_rad:
+    left_ankle_pitch_joint: 0.0
+    left_ankle_roll_joint: 0.0
+    left_elbow_joint: 0.20006772538077514
+    left_hip_pitch_joint: 0.0
+    left_hip_roll_joint: 0.0
+    left_hip_yaw_joint: 0.0
+    left_knee_joint: 0.0
+    left_shoulder_pitch_joint: 0.5088753029512367
+    left_shoulder_roll_joint: 0.0279079917082087
+    left_shoulder_yaw_joint: 0.09208547228577636
+    left_wrist_pitch_joint: 0.029310673344080832
+    left_wrist_roll_joint: -0.0032112375622858256
+    left_wrist_yaw_joint: 0.006724474307034503
+    right_ankle_pitch_joint: 0.0
+    right_ankle_roll_joint: 0.0
+    right_elbow_joint: 0.21042019660406522
+    right_hip_pitch_joint: 0.0
+    right_hip_roll_joint: 0.0
+    right_hip_yaw_joint: 0.0
+    right_knee_joint: 0.0
+    right_shoulder_pitch_joint: 0.5233377269785298
+    right_shoulder_roll_joint: -0.12192692932260817
+    right_shoulder_yaw_joint: -0.06842184102151985
+    right_wrist_pitch_joint: 0.016904032087798466
+    right_wrist_roll_joint: -0.01496013347230539
+    right_wrist_yaw_joint: 0.01592152960321398
+    waist_pitch_joint: 0.06137465268321723
+    waist_roll_joint: -0.022502265209858454
+    waist_yaw_joint: 0.04701440490839463
+  pelvis_height: 0.8

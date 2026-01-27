@@ -1,0 +1,9 @@
+motions:
+- file: datasets/teleop_motions/baby_steps/steps_001.pkl
+  weight: 1.0
+- file: datasets/teleop_motions/baby_steps/steps_002.pkl
+  weight: 1.0
+- file: datasets/teleop_motions/baby_steps/steps_003.pkl
+  weight: 1.0
+name: stage1_stand
+root_path: ..

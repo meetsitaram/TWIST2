@@ -11,6 +11,9 @@ This helps debug IK-based retargeting by showing where end-effectors should be.
 Usage:
     python visualize_end_effectors.py
     python visualize_end_effectors.py --pose 1_20260123_162606
+    
+    # Test camera tilt correction (positive = rotate skeleton backward)
+    python visualize_end_effectors.py --pose 1_20260123_162606 --pitch 15
 """
 
 import numpy as np
@@ -664,6 +667,86 @@ def compare_all_pairs():
         print("-"*90)
 
 
+def apply_pitch_correction(skeleton: np.ndarray, pitch_deg: float) -> np.ndarray:
+    """
+    Apply a pitch rotation to the skeleton to correct for camera tilt.
+    
+    Args:
+        skeleton: (33, 3) array of MediaPipe landmarks
+        pitch_deg: Rotation angle in degrees (positive = rotate backward)
+    
+    Returns:
+        Rotated skeleton
+    """
+    if abs(pitch_deg) < 0.1:
+        return skeleton
+    
+    pitch_rad = np.radians(pitch_deg)
+    
+    # Rotation around X-axis (pitch correction)
+    Rx = np.array([
+        [1, 0, 0],
+        [0, np.cos(pitch_rad), -np.sin(pitch_rad)],
+        [0, np.sin(pitch_rad), np.cos(pitch_rad)]
+    ])
+    
+    # Apply rotation to each valid landmark
+    rotated = skeleton.copy()
+    for i in range(len(skeleton)):
+        if not np.any(np.isnan(skeleton[i])):
+            rotated[i] = Rx @ skeleton[i]
+    
+    return rotated
+
+
+def apply_leg_pitch_correction(skeleton: np.ndarray, pitch_deg: float) -> np.ndarray:
+    """
+    Apply a pitch rotation ONLY to leg landmarks, relative to pelvis.
+    
+    This corrects for leg tilt without affecting the upper body.
+    
+    Args:
+        skeleton: (33, 3) array of MediaPipe landmarks
+        pitch_deg: Rotation angle in degrees (positive = rotate legs forward)
+    
+    Returns:
+        Skeleton with rotated legs
+    """
+    if abs(pitch_deg) < 0.1:
+        return skeleton
+    
+    # Leg landmark indices
+    LEG_LANDMARKS = [
+        MP_LEFT_HIP, MP_RIGHT_HIP,
+        MP_LEFT_KNEE, MP_RIGHT_KNEE,
+        MP_LEFT_ANKLE, MP_RIGHT_ANKLE,
+        MP_LEFT_HEEL, MP_RIGHT_HEEL,
+        MP_LEFT_FOOT_INDEX, MP_RIGHT_FOOT_INDEX,
+    ]
+    
+    pitch_rad = np.radians(pitch_deg)
+    
+    # Rotation around X-axis
+    Rx = np.array([
+        [1, 0, 0],
+        [0, np.cos(pitch_rad), -np.sin(pitch_rad)],
+        [0, np.sin(pitch_rad), np.cos(pitch_rad)]
+    ])
+    
+    # Get pelvis as rotation center
+    pelvis = (skeleton[MP_LEFT_HIP] + skeleton[MP_RIGHT_HIP]) / 2
+    
+    rotated = skeleton.copy()
+    for i in LEG_LANDMARKS:
+        if not np.any(np.isnan(skeleton[i])):
+            # Rotate around pelvis
+            rel_pos = skeleton[i] - pelvis
+            rotated_rel = Rx @ rel_pos
+            rotated[i] = pelvis + rotated_rel
+    
+    return rotated
+
+
 def main():
     parser = argparse.ArgumentParser(description="Visualize end-effector positions")
     parser.add_argument("--pose", "-p", type=str, default=None,
@@ -672,6 +755,10 @@ def main():
                        help="Compare all matched human-robot pairs")
     parser.add_argument("--list", "-l", action="store_true",
                        help="List available poses")
+    parser.add_argument("--pitch", type=float, default=0.0,
+                       help="Pitch correction in degrees (positive = rotate backward, fixes forward tilt)")
+    parser.add_argument("--leg-pitch", type=float, default=0.0,
+                       help="Leg-only pitch correction (positive = rotate legs forward, fixes backward tilt)")
     args = parser.parse_args()
     
     if args.list:
@@ -709,7 +796,19 @@ def main():
     
     print(f"\nLoading: {human_file.stem}")
     human_pose = load_human_pose(human_file)
-    human_ee = extract_human_end_effectors(human_pose["skeleton_3d"])
+    skeleton_3d = np.array(human_pose["skeleton_3d"])
+    
+    # Apply pitch correction if specified
+    if abs(args.pitch) > 0.1:
+        print(f"Applying pitch correction: {args.pitch:+.1f}°")
+        skeleton_3d = apply_pitch_correction(skeleton_3d, args.pitch)
+    
+    # Apply leg-only pitch correction if specified
+    if abs(args.leg_pitch) > 0.1:
+        print(f"Applying leg pitch correction: {args.leg_pitch:+.1f}°")
+        skeleton_3d = apply_leg_pitch_correction(skeleton_3d, args.leg_pitch)
+    
+    human_ee = extract_human_end_effectors(skeleton_3d)
     
     # Try to find matching robot pose
     robot_ee = None

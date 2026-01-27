@@ -1,0 +1,11 @@
+# TWIST2 Motion Dataset Config
+# Generated from teleop episodes
+# Config: big_steps
+
+root_path: /home/stickbot/projects/g1-pick-n-place/TWIST2/datasets/teleop_motions/big_steps
+
+motions:
+  - file: big_steps_001.pkl
+    weight: 1.0
+  - file: big_steps_002.pkl
+    weight: 1.0

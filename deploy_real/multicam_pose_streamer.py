@@ -536,6 +536,14 @@ class MultiCamPoseStreamer:
         skeleton_smoothing: str = "none",
         smoothing_min_cutoff: float = 1.0,
         smoothing_beta: float = 0.007,
+        # World frame correction for camera tilt
+        # Rotates triangulated skeleton to correct for cameras pointing downward
+        # Positive pitch_correction rotates skeleton backward (fixes forward tilt)
+        world_pitch_correction_deg: float = 0.0,
+        world_roll_correction_deg: float = 0.0,
+        # Leg-only pitch correction (rotates legs around pelvis)
+        # Positive = rotate legs forward, Negative = rotate legs backward
+        leg_pitch_correction_deg: float = 0.0,
     ):
         """
         Initialize multi-camera pose streamer.
@@ -551,6 +559,9 @@ class MultiCamPoseStreamer:
             skeleton_smoothing: Smoothing method - "none", "one_euro"
             smoothing_min_cutoff: One Euro min_cutoff parameter (lower = smoother)
             smoothing_beta: One Euro beta parameter (higher = more responsive to speed)
+            world_pitch_correction_deg: Pitch correction in degrees (positive = rotate backward)
+            world_roll_correction_deg: Roll correction in degrees (positive = roll right)
+            leg_pitch_correction_deg: Leg-only pitch correction (positive = forward, negative = backward)
         """
         if not MEDIAPIPE_AVAILABLE:
             raise ImportError("MediaPipe required. Install with: pip install mediapipe")
@@ -601,6 +612,43 @@ class MultiCamPoseStreamer:
                        f"(min_cutoff={smoothing_min_cutoff}, beta={smoothing_beta})")
         elif skeleton_smoothing != "none":
             logger.warning(f"Unknown smoothing method '{skeleton_smoothing}' or smoothing not available")
+        
+        # World frame rotation correction (for camera tilt)
+        # This rotates the triangulated skeleton to align with world Z-up
+        self.world_rotation_matrix = None
+        if abs(world_pitch_correction_deg) > 0.1 or abs(world_roll_correction_deg) > 0.1:
+            pitch_rad = np.radians(world_pitch_correction_deg)
+            roll_rad = np.radians(world_roll_correction_deg)
+            
+            # Rotation around X-axis (pitch correction - forward/backward tilt)
+            Rx = np.array([
+                [1, 0, 0],
+                [0, np.cos(pitch_rad), -np.sin(pitch_rad)],
+                [0, np.sin(pitch_rad), np.cos(pitch_rad)]
+            ])
+            
+            # Rotation around Y-axis (roll correction - side tilt)
+            Ry = np.array([
+                [np.cos(roll_rad), 0, np.sin(roll_rad)],
+                [0, 1, 0],
+                [-np.sin(roll_rad), 0, np.cos(roll_rad)]
+            ])
+            
+            # Combined rotation: first roll, then pitch
+            self.world_rotation_matrix = Rx @ Ry
+            logger.info(f"World frame correction enabled: pitch={world_pitch_correction_deg}°, roll={world_roll_correction_deg}°")
+        
+        # Leg-only pitch correction
+        self.leg_pitch_correction_deg = leg_pitch_correction_deg
+        self.leg_rotation_matrix = None
+        if abs(leg_pitch_correction_deg) > 0.1:
+            leg_pitch_rad = np.radians(leg_pitch_correction_deg)
+            self.leg_rotation_matrix = np.array([
+                [1, 0, 0],
+                [0, np.cos(leg_pitch_rad), -np.sin(leg_pitch_rad)],
+                [0, np.sin(leg_pitch_rad), np.cos(leg_pitch_rad)]
+            ])
+            logger.info(f"Leg pitch correction enabled: {leg_pitch_correction_deg}°")
         
         # Processing thread
         self.is_running = False
@@ -721,6 +769,28 @@ class MultiCamPoseStreamer:
                         for i in range(33):
                             if not valid_mask[i]:
                                 skeleton_3d[i] = np.nan
+                
+                # Apply world frame rotation correction if configured
+                if self.world_rotation_matrix is not None:
+                    # Rotate each valid landmark
+                    for i in range(len(skeleton_3d)):
+                        if not np.isnan(skeleton_3d[i, 0]):
+                            skeleton_3d[i] = self.world_rotation_matrix @ skeleton_3d[i]
+                
+                # Apply leg-only pitch correction if configured
+                if self.leg_rotation_matrix is not None:
+                    # MediaPipe leg landmark indices
+                    LEG_LANDMARKS = [23, 24, 25, 26, 27, 28, 29, 30, 31, 32]  # hips, knees, ankles, heels, feet
+                    # Get pelvis as rotation center
+                    left_hip = skeleton_3d[23]
+                    right_hip = skeleton_3d[24]
+                    if not np.isnan(left_hip[0]) and not np.isnan(right_hip[0]):
+                        pelvis = (left_hip + right_hip) / 2
+                        for i in LEG_LANDMARKS:
+                            if not np.isnan(skeleton_3d[i, 0]):
+                                rel_pos = skeleton_3d[i] - pelvis
+                                rotated_rel = self.leg_rotation_matrix @ rel_pos
+                                skeleton_3d[i] = pelvis + rotated_rel
                 
                 with self.data_lock:
                     self.latest_3d_skeleton = skeleton_3d
