@@ -1523,10 +1523,51 @@ if blend_waist:
         --teleop redis
 ```
 
+### Current Status (Jan 26, 2026)
+
+**Completed:**
+- [x] PKL overlay tested - robot balances while tracking arm motions
+- [x] Redis teleop tested - real-time camera control works
+- [x] Added FPS monitoring to `stream_ik_teleop.py`
+- [x] Added root XY tracking reward for locomotion training
+- [x] Created `docs/ISAACLAB_OBSERVATION_SPEC.md` documenting 178-dim observation space
+- [x] Recorded new walking/standing datasets (stand_and_walk)
+- [x] Started overnight training with new locomotion data
+
+**Performance Notes:**
+- Isaac Lab viewport rendering: ~40ms/step (~22 FPS)
+- Isaac Lab headless: ~22ms/step (~45 FPS)
+- MuJoCo viewer (stream_ik_teleop): ~33ms/step (~30 FPS)
+
+**Key Files:**
+| File | Purpose |
+|------|---------|
+| `scripts/train_isaaclab.py` | Train policy with motion imitation |
+| `scripts/play_isaaclab_teleop.py` | Deploy policy with teleop overlay |
+| `deploy_real/stream_ik_teleop.py` | Record/replay IK teleop (MuJoCo) |
+| `deploy_real/isaac_lab_teleop_publisher.py` | Camera → Redis for Isaac Lab |
+| `deploy_real/convert_episodes_to_motion.py` | Convert recordings to PKL |
+| `docs/ISAACLAB_OBSERVATION_SPEC.md` | 178-dim observation documentation |
+
+### Sim2Real Considerations
+
+**Joint Order Differences:**
+- Real Robot (Unitree SDK): 29 DOF in motor order
+- MuJoCo: 29 DOF (matches real robot)
+- Isaac Lab: 37 DOF (alphabetical, includes hands/head)
+
+**Before deploying to real robot:**
+1. Check robot variant (g1_23dof vs g1_29dof) - see `mode_machine` value
+2. Map Isaac Lab 37-DOF actions → Real robot 29-DOF commands
+3. Construct Isaac Lab 178-dim observations from real sensor data
+4. Test with arms-only before enabling legs
+
+See `docs/ISAACLAB_OBSERVATION_SPEC.md` for detailed observation/action mappings.
+
 ### Next Steps
 
-1. **Test PKL overlay**: Verify robot can stand while playing recorded arm motions
-2. **Test Redis teleop**: Verify real-time camera control works
+1. **Evaluate overnight training results** - check if robot learns walking pattern
+2. **Add human XY tracking to recordings** - currently fixed at origin
 3. **Tune blend parameters**: May need to adjust blend_alpha for smooth transitions
-4. **Add waist control**: Test with --blend_waist to see if it improves tracking
-5. **Export to real robot**: Once verified in sim, adapt for real G1 deployment
+4. **Sim2Real deployment**: Create real robot deployment script with proper mappings
+5. **Test on real G1**: Verify in simulation matches real hardware

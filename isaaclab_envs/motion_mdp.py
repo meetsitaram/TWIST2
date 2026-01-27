@@ -211,6 +211,36 @@ def tracking_keybody_pos(
     return torch.exp(-pos_error / std)
 
 
+def tracking_root_pos_xy(
+    env: ManagerBasedRLEnv,
+    std: float = 0.25,
+) -> torch.Tensor:
+    """Reward for tracking target root XY position (horizontal movement).
+    
+    This enables the robot to follow walking/locomotion targets.
+    
+    Args:
+        env: The environment instance.
+        std: Standard deviation for exponential kernel (meters).
+    
+    Returns:
+        Reward tensor of shape (num_envs,)
+    """
+    # Skip if motion not initialized
+    if not hasattr(env, '_motion_initialized') or not env._motion_initialized:
+        return torch.zeros(env.num_envs, device=env.device)
+    
+    target_state = get_target_state(env)
+    target_xy = target_state["root_pos"][:, :2]  # XY components
+    
+    robot = env.scene["robot"]
+    current_xy = robot.data.root_pos_w[:, :2]
+    
+    xy_error = torch.norm(current_xy - target_xy, dim=1)
+    
+    return torch.exp(-xy_error / std)
+
+
 def tracking_root_height(
     env: ManagerBasedRLEnv,
     std: float = 0.1,

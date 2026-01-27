@@ -76,6 +76,13 @@ class G1MotionMimicRewards(RewardsCfg):
         params={"std": 0.1},
     )
     
+    # Root XY position tracking (horizontal movement for walking)
+    tracking_root_pos_xy = RewTerm(
+        func=motion_mdp.tracking_root_pos_xy,
+        weight=2.0,  # Important for locomotion
+        params={"std": 0.25},
+    )
+    
     # Root orientation tracking
     tracking_root_orientation = RewTerm(
         func=motion_mdp.tracking_root_orientation,

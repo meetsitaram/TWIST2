@@ -1,0 +1,31 @@
+# TWIST2 Motion Dataset Config
+# Generated from teleop episodes
+# Config: stand_and_walk
+
+root_path: /home/stickbot/projects/g1-pick-n-place/TWIST2/datasets/teleop_motions
+
+motions:
+  - file: large-steps.pkl
+    weight: 1.0
+  - file: single-leg-2.pkl
+    weight: 1.0
+  - file: single-leg.pkl
+    weight: 1.0
+  - file: single-steps-001.pkl
+    weight: 1.0
+  - file: small-steps-hands-balance.pkl
+    weight: 1.0
+  - file: small-steps.pkl
+    weight: 1.0
+  - file: stable-stand.pkl
+    weight: 1.0
+  - file: stand-with-moving-hands.pkl
+    weight: 1.0
+  - file: stand4.pkl
+    weight: 1.0
+  - file: tilt-and-step.pkl
+    weight: 1.0
+  - file: walk.pkl
+    weight: 1.0
+  - file: walk2.pkl
+    weight: 1.0
