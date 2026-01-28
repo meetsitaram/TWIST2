@@ -131,6 +131,10 @@ parser.add_argument("--robust_hard", action="store_true",
 parser.add_argument("--stage3", action="store_true",
                     help="Stage 3: Upper body manipulation with EE tracking (use with --checkpoint)")
 
+# Whole-body teleop training (simplified reward structure)
+parser.add_argument("--wholebody", action="store_true",
+                    help="Whole-body teleop: Simple reward (don't fall + match joints)")
+
 # Fine-tuning mode (lower learning rate for stability)
 parser.add_argument("--finetune", action="store_true",
                     help="Use lower learning rate (1e-4) for fine-tuning/resuming training")
@@ -162,6 +166,7 @@ from isaaclab_envs.g1_motion_mimic_env_cfg import (
     G1MotionMimicEnvCfg, 
     G1MotionMimicEnvCfg_ROBUST,
     G1MotionMimicEnvCfg_STAGE3,
+    G1WholeBodyTeleopEnvCfg,
 )
 from isaaclab_envs.agents.rsl_rl_ppo_cfg import G1MotionMimicPPORunnerCfg, G1MotionMimicPPORunnerCfg_FineTune
 
@@ -181,7 +186,10 @@ def main():
     
     try:
         # Create environment config
-        if args.stage3:
+        if args.wholebody:
+            print("[Train] WHOLE-BODY TELEOP: Don't fall + match joints")
+            env_cfg = G1WholeBodyTeleopEnvCfg()
+        elif args.stage3:
             print("[Train] STAGE 3: Upper body end-effector tracking")
             env_cfg = G1MotionMimicEnvCfg_STAGE3()
         elif args.robust_hard:

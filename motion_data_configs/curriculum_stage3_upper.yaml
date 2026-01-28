@@ -1,4 +1,18 @@
 motions:
+- file: datasets/teleop_motions/baby_steps/steps_001.pkl
+  weight: 1.0
+- file: datasets/teleop_motions/baby_steps/steps_002.pkl
+  weight: 1.0
+- file: datasets/teleop_motions/baby_steps/steps_003.pkl
+  weight: 1.0
+- file: datasets/teleop_motions/big_steps/big_steps_001.pkl
+  weight: 1.0
+- file: datasets/teleop_motions/big_steps/big_steps_002.pkl
+  weight: 1.0
+- file: datasets/teleop_motions/push_balance/push_001.pkl
+  weight: 1.0
+- file: datasets/teleop_motions/push_balance/push_002.pkl
+  weight: 1.0
 - file: datasets/teleop_motions/stage3_upper_body/both-hands-2.pkl
   weight: 1.0
 - file: datasets/teleop_motions/stage3_upper_body/both-hands.pkl

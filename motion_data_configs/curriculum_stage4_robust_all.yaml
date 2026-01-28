@@ -41,5 +41,5 @@ motions:
   weight: 1.0
 - file: datasets/teleop_motions/stage3_upper_body/wipe.pkl
   weight: 1.0
-name: stage2_move
+name: stage4_robust_all
 root_path: ..

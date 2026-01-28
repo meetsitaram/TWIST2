@@ -100,6 +100,8 @@ parser.add_argument("--blend_alpha", type=float, default=1.0,
 parser.add_argument("--direct_override", action="store_true",
                     help="Directly override upper body joint ACTIONS instead of injecting targets. "
                          "This bypasses policy learning and directly sets joint positions.")
+parser.add_argument("--free_camera", action="store_true",
+                    help="Disable camera tracking - allows free camera movement in viewport")
 
 # Debug
 parser.add_argument("--debug_timing", action="store_true",
@@ -388,12 +390,19 @@ def main():
     env_cfg.scene.num_envs = args.num_envs
     env_cfg.motion_file = os.path.join(TWIST2_ROOT, args.env_motion_file)
     
-    # Configure viewport camera to follow robot
-    env_cfg.viewer.eye = (3.0, 3.0, 2.0)  # Camera position offset
-    env_cfg.viewer.lookat = (0.0, 0.0, 0.8)  # Look at robot torso height
-    env_cfg.viewer.origin_type = "asset_root"  # Follow robot root
-    env_cfg.viewer.asset_name = "robot"  # Track the robot asset
-    print("[Play] Camera tracking: following robot")
+    # Configure viewport camera
+    if args.free_camera:
+        # Free camera mode - no tracking, user can move camera freely
+        env_cfg.viewer.eye = (3.0, 3.0, 2.0)
+        env_cfg.viewer.lookat = (0.0, 0.0, 0.8)
+        print("[Play] Camera: FREE mode (no tracking)")
+    else:
+        # Follow robot mode
+        env_cfg.viewer.eye = (3.0, 3.0, 2.0)  # Camera position offset
+        env_cfg.viewer.lookat = (0.0, 0.0, 0.8)  # Look at robot torso height
+        env_cfg.viewer.origin_type = "asset_root"  # Follow robot root
+        env_cfg.viewer.asset_name = "robot"  # Track the robot asset
+        print("[Play] Camera: TRACKING robot")
     
     # Real-time optimization settings
     if args.fast_render:

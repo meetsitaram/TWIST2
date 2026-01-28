@@ -79,15 +79,39 @@ class G1MotionMimicRewards(RewardsCfg):
     # Root XY position tracking (horizontal movement for walking)
     tracking_root_pos_xy = RewTerm(
         func=motion_mdp.tracking_root_pos_xy,
-        weight=2.0,  # Important for locomotion
-        params={"std": 0.25},
+        weight=5.0,  # INCREASED: Important to stay in place
+        params={"std": 0.15},  # TIGHTER: 15cm tolerance
     )
     
     # Root orientation tracking
     tracking_root_orientation = RewTerm(
         func=motion_mdp.tracking_root_orientation,
-        weight=1.0,
-        params={"std": 0.5},
+        weight=2.0,  # INCREASED: Maintain heading
+        params={"std": 0.3},  # TIGHTER
+    )
+    
+    # === STAY-IN-PLACE PENALTIES (prevent wandering) ===
+    
+    # Penalize XY velocity - robot should stay stationary unless tracking movement
+    base_lin_vel_xy_penalty = RewTerm(
+        func=motion_mdp.base_lin_vel_xy_penalty,
+        weight=-2.0,  # Penalty for horizontal movement
+    )
+    
+    # Penalize rotation - robot should maintain heading
+    base_ang_vel_penalty = RewTerm(
+        func=motion_mdp.base_ang_vel_penalty,
+        weight=-1.0,  # Penalty for spinning
+    )
+    
+    # === FLAT FEET (stable standing posture) ===
+    
+    # Reward for keeping feet flat on ground (not on toes)
+    # Essential for real-world stable standing
+    flat_feet = RewTerm(
+        func=motion_mdp.flat_feet_reward,
+        weight=2.0,  # Encourage flat feet
+        params={"asset_cfg": SceneEntityCfg("robot")},
     )
     
     # === STABILITY REWARDS (from base locomotion) ===
@@ -98,7 +122,7 @@ class G1MotionMimicRewards(RewardsCfg):
     # Feet air time for walking motions
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_positive_biped,
-        weight=0.5,
+        weight=0.25,  # REDUCED: Less emphasis on air time (for standing)
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
@@ -109,7 +133,7 @@ class G1MotionMimicRewards(RewardsCfg):
     # Feet slide penalty
     feet_slide = RewTerm(
         func=mdp.feet_slide,
-        weight=-0.1,
+        weight=-1.0,  # INCREASED: Strong penalty for sliding feet
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
@@ -384,8 +408,11 @@ class G1MotionMimicEnvCfg_ROBUST(G1MotionMimicEnvCfg):
             },
         )
         
-        # Optionally enable mass randomization for extra robustness
-        # self.events.add_base_mass = EventTermCfg(...)
+        # Disable stay-in-place penalties for push recovery
+        self.rewards.base_lin_vel_xy_penalty = None
+        self.rewards.base_ang_vel_penalty = None
+        self.rewards.feet_slide.weight = -0.1
+        self.rewards.tracking_root_pos_xy.weight = 1.0
 
 
 @configclass
@@ -415,6 +442,12 @@ class G1MotionMimicEnvCfg_ROBUST_MEDIUM(G1MotionMimicEnvCfg):
                 }
             },
         )
+        
+        # Disable stay-in-place penalties for push recovery
+        self.rewards.base_lin_vel_xy_penalty = None
+        self.rewards.base_ang_vel_penalty = None
+        self.rewards.feet_slide.weight = -0.1
+        self.rewards.tracking_root_pos_xy.weight = 1.0
 
 
 @configclass
@@ -444,6 +477,12 @@ class G1MotionMimicEnvCfg_ROBUST_HARD(G1MotionMimicEnvCfg):
                 }
             },
         )
+        
+        # Disable stay-in-place penalties for push recovery
+        self.rewards.base_lin_vel_xy_penalty = None
+        self.rewards.base_ang_vel_penalty = None
+        self.rewards.feet_slide.weight = -0.1
+        self.rewards.tracking_root_pos_xy.weight = 1.0
 
 
 ##############################################################################
@@ -454,34 +493,36 @@ class G1MotionMimicEnvCfg_ROBUST_HARD(G1MotionMimicEnvCfg):
 class G1MotionMimicRewards_STAGE3(G1MotionMimicRewards):
     """Stage 3: Upper body manipulation via joint angle tracking.
     
-    The teleop dataset contains the robot's joint angles directly (dof_pos),
-    so we use joint tracking as the primary reward. This is more direct than
-    end-effector position tracking and doesn't require FK computation.
+    ONLY upper body joints are tracked for rewards.
+    Lower body is free to adapt for balance - NOT penalized for not matching motion.
     
-    Key differences from Stage 1:
-    - Higher weight on joint tracking (primary objective)
-    - Separate arm joint tracking with tighter precision
-    - Upper body stability reward (keep torso stable)
-    - Reduced lower body tracking weight (allow balance adaptation)
+    Key features:
+    - ONLY upper body joints (shoulders, elbows, wrists) tracked
+    - Lower body joint tracking DISABLED (let it balance freely)
+    - Balance rewards maintained (height, orientation)
+    - Stay-in-place penalties still active
     """
     
-    # === PRIMARY: JOINT ANGLE TRACKING ===
+    # === PRIMARY: UPPER BODY ONLY JOINT TRACKING ===
     
-    # Overall joint tracking (all 29 DOFs)
-    tracking_joint_dof = RewTerm(
-        func=motion_mdp.tracking_joint_dof,
-        weight=3.0,  # Increased from 2.0 - primary objective
-        params={"std": 0.4},  # Tighter than Stage 1
-    )
+    # DISABLE full body joint tracking - don't penalize legs
+    tracking_joint_dof = None  # Disabled - was tracking all 29 joints
+    tracking_joint_vel = None  # Disabled - was tracking all joint velocities
     
-    # Arm joints tracking with higher weight
-    # (shoulders, elbows, wrists - indices 13-28 on G1)
+    # ONLY track arm joints (shoulders, elbows, wrists)
     tracking_arm_joints = RewTerm(
         func=motion_mdp.tracking_arm_joints,
-        weight=4.0,  # High weight for arms specifically
+        weight=8.0,  # HIGH weight - primary objective
         params={
-            "std": 0.3,  # Tighter precision for arms
+            "std": 0.25,  # Tight precision for arms
         },
+    )
+    
+    # Also use the upper body joints reward for redundancy
+    tracking_upper_body_joints = RewTerm(
+        func=motion_mdp.tracking_upper_body_joints,
+        weight=5.0,  # Additional upper body tracking
+        params={"std": 0.2},
     )
     
     # === STABILITY: KEEP BALANCE WHILE ARMS MOVE ===
@@ -489,25 +530,29 @@ class G1MotionMimicRewards_STAGE3(G1MotionMimicRewards):
     # Upper body stability (keep torso stable during manipulation)
     upper_body_stability = RewTerm(
         func=motion_mdp.upper_body_stability,
-        weight=1.5,
+        weight=2.0,
         params={"asset_cfg": SceneEntityCfg("robot")},
     )
     
     # Keep height tracking to prevent crouching/rising
     tracking_root_height = RewTerm(
         func=motion_mdp.tracking_root_height,
-        weight=2.0,  # Important for manipulation
+        weight=3.0,  # Important - stay upright
         params={"std": 0.1},
     )
     
-    # === REDUCED: LOWER BODY TRACKING (let it adapt for balance) ===
-    
-    # Reduce weight on root XY tracking - upper body is priority
-    tracking_root_pos_xy = RewTerm(
-        func=motion_mdp.tracking_root_pos_xy,
-        weight=0.5,  # Reduced from 2.0 - allow drift for balance
-        params={"std": 0.5},  # More lenient
+    # Root orientation - keep facing forward
+    tracking_root_orientation = RewTerm(
+        func=motion_mdp.tracking_root_orientation,
+        weight=2.0,
+        params={"std": 0.3},
     )
+    
+    # === LOWER BODY: LET IT BALANCE FREELY ===
+    
+    # Disable lower body position tracking - legs should balance, not follow motion
+    tracking_root_pos_xy = None  # Let robot drift if needed for balance
+    tracking_keybody_pos = None  # Don't track feet/elbows positions
     
     # Disable EE tracking (not working, use joint tracking instead)
     tracking_ee_pos = None
@@ -586,7 +631,125 @@ class G1MotionMimicEnvCfg_STAGE3_ROBUST(G1MotionMimicEnvCfg_STAGE3):
             },
         )
         
-        print("[Env] STAGE3_ROBUST: Upper body tracking + gentle push disturbances enabled")
+        # IMPORTANT: Disable/reduce stay-in-place penalties for push recovery
+        # Robot needs to take recovery steps when pushed, not stay frozen
+        self.rewards.base_lin_vel_xy_penalty = None  # Allow recovery movement
+        self.rewards.base_ang_vel_penalty = None  # Allow recovery rotation
+        self.rewards.feet_slide.weight = -0.1  # Reduce slide penalty (was -1.0)
+        self.rewards.tracking_root_pos_xy.weight = 1.0  # Reduce XY tracking (was 5.0)
+        
+        print("[Env] STAGE3_ROBUST: Push disturbances ON, stay-in-place penalties OFF for recovery")
+
+
+##############################################################################
+# WHOLE BODY TELEOP TRAINING - Simplified reward structure
+##############################################################################
+
+@configclass
+class G1WholeBodyTeleopRewards(RewardsCfg):
+    """Simplified rewards for whole-body teleop training.
+    
+    Two main goals:
+    1. Don't fall (termination penalty)
+    2. Match joint positions from teleop (high weight tracking)
+    
+    Keeps minimal base rewards but with correct G1 body patterns.
+    """
+    
+    # === FIX BASE REWARDS WITH CORRECT G1 BODY PATTERNS ===
+    # Base RewardsCfg uses .*FOOT which doesn't match G1's ankle_roll_link
+    # We keep these but with very low weights (parent __post_init__ modifies them)
+    feet_air_time = RewTerm(
+        func=mdp.feet_air_time_positive_biped,
+        weight=0.1,  # Very low - not the focus
+        params={
+            "command_name": "base_velocity",
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
+            "threshold": 0.4,
+        },
+    )
+    
+    # Disable others that may use wrong patterns
+    undesired_contacts = None
+    
+    # === PRIMARY: Joint position tracking ===
+    # This is the main reward - do exactly what teleop says
+    tracking_joint_dof = RewTerm(
+        func=motion_mdp.tracking_joint_dof,
+        weight=10.0,  # HIGH weight - primary objective
+        params={"std": 0.25},  # Tight tracking (0.25 rad ~ 14 degrees)
+    )
+    
+    # Upper body gets extra attention
+    tracking_upper_body_joints = RewTerm(
+        func=motion_mdp.tracking_upper_body_joints,
+        weight=5.0,  # Extra weight for arms
+        params={"std": 0.2},  # Even tighter for upper body
+    )
+    
+    # === SECONDARY: Stay upright ===
+    tracking_root_height = RewTerm(
+        func=motion_mdp.tracking_root_height,
+        weight=2.0,
+        params={"std": 0.1},
+    )
+    
+    tracking_root_orientation = RewTerm(
+        func=motion_mdp.tracking_root_orientation,
+        weight=2.0,
+        params={"std": 0.3},
+    )
+    
+    # === TERMINATION PENALTY: Don't fall ===
+    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-500.0)  # Very high penalty
+    
+    # === MINIMAL SMOOTHNESS (just to prevent jitter) ===
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.005)
+    
+    # Joint limits - stay safe
+    dof_pos_limits = RewTerm(
+        func=mdp.joint_pos_limits,
+        weight=-10.0,
+        params={"asset_cfg": SceneEntityCfg("robot")},
+    )
+
+
+@configclass 
+class G1WholeBodyTeleopEnvCfg(G1MotionMimicEnvCfg):
+    """Whole-body teleop training - simplified configuration.
+    
+    Goal: Train policy to exactly mimic recorded teleop sessions.
+    
+    Reward structure:
+    - Don't fall (high termination penalty)
+    - Match ALL joint positions from teleop data
+    
+    No staged curriculum - train directly on diverse motions.
+    """
+    
+    rewards: G1WholeBodyTeleopRewards = G1WholeBodyTeleopRewards()
+    
+    def __post_init__(self):
+        super().__post_init__()
+        
+        # Long episodes - see full motions
+        self.episode_length_s = 20.0
+        
+        # No external disturbances during training
+        self.events.push_robot = None
+        self.events.base_external_force_torque = None
+        
+        # Disable velocity command-based rewards (we're doing motion imitation)
+        # Keep only motion tracking termination
+        
+        # Relax tracking failure threshold - let it learn
+        from isaaclab.managers import TerminationTermCfg
+        self.terminations.motion_tracking_failure = TerminationTermCfg(
+            func=motion_mdp.motion_tracking_failure,
+            params={"threshold": 1.5},  # Relaxed - 1.5 rad average error
+        )
+        
+        print("[Env] WholeBodyTeleop: Joint tracking focused, no disturbances")
 
 
 @configclass

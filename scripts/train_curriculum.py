@@ -215,7 +215,7 @@ def main():
     if args.test:
         iterations = [500, 500, 500, 500]  # ~15 min each
     elif args.full:
-        iterations = [5000, 5000, 10000, 5000]  # Full training (upper body needs more)
+        iterations = [10000, 10000, 20000, 10000]  # Full training (50k total)
     elif args.iterations:
         if len(args.iterations) == 1:
             iterations = [args.iterations[0]] * 4
@@ -242,40 +242,47 @@ def main():
     
     print(f"\nOutput directory: {run_dir}\n")
     
-    # Stage definitions (5-stage curriculum)
-    # 1. Standing - basic balance
-    # 2. Walking - movement
-    # 3. Upper body - arm control in stable environment
-    # 4. Robust upper body - push forces + upper body motions
+    # ALL available motion directories
+    ALL_MOTION_DIRS = [
+        'baby_steps',           # 3 motions - basic stepping
+        'big_steps',            # 2 motions - larger strides
+        'push_balance',         # 2 motions - balance recovery
+        'stage3_upper_body',    # 14 motions - upper body manipulation
+    ]
+    # NOTE: stage1_stand_walk excluded (bad quality, moved to twist2_bkp/)
+    
+    # Stage definitions (4-stage curriculum with FULL DIVERSITY)
+    # ALL stages use ALL motion data for maximum generalization
+    # The difference is in the REWARD structure and DISTURBANCES
     stages = [
         {
             'name': 'stage1_stand',
-            'motion_dirs': ['baby_steps'],
+            'motion_dirs': ALL_MOTION_DIRS,  # ALL motions
             'robust': False,
-            'stage3': False,
-            'description': 'Basic standing balance',
+            'stage3': False,  # Focus on lower body balance/locomotion rewards
+            'description': 'Basic balance with ALL motions (34 files)',
         },
         {
             'name': 'stage2_move',
-            'motion_dirs': ['baby_steps', 'big_steps'],
+            'motion_dirs': ALL_MOTION_DIRS,  # ALL motions
             'robust': False,
-            'stage3': False,
-            'description': 'Walking and movement',
+            'stage3': False,  # Lower body focus continues
+            'description': 'Movement with ALL motions (34 files)',
         },
         {
             'name': 'stage3_upper',
-            'motion_dirs': ['stage3_upper_body'],
+            'motion_dirs': ALL_MOTION_DIRS,  # ALL motions
             'robust': False,
-            'stage3': True,  # Use upper body tracking rewards
-            'description': 'Upper body control (stable environment)',
+            'stage3': True,  # Add upper body tracking rewards
+            'description': 'Upper body control with ALL motions (34 files)',
         },
         {
-            'name': 'stage4_robust_upper',
-            'motion_dirs': ['stage3_upper_body'],
+            'name': 'stage4_robust_all',
+            'motion_dirs': ALL_MOTION_DIRS,  # ALL motions
             'robust': True,
             'robust_level': None,  # easy pushes
             'stage3': True,  # Keep upper body tracking rewards
-            'description': 'Robust upper body (with push forces)',
+            'description': 'Robust with push forces + ALL motions (34 files)',
         },
     ]
     

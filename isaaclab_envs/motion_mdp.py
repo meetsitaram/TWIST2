@@ -136,6 +136,52 @@ def tracking_joint_dof(
     return _safe_reward(reward)
 
 
+def tracking_upper_body_joints(
+    env: ManagerBasedRLEnv,
+    std: float = 0.2,
+) -> torch.Tensor:
+    """Reward for tracking upper body joint positions specifically.
+    
+    Targets shoulder, elbow, and wrist joints for arm tracking.
+    Uses exponential kernel: exp(-mean_squared_error / std^2)
+    
+    Args:
+        env: The environment instance.
+        std: Standard deviation for exponential kernel.
+    
+    Returns:
+        Reward tensor of shape (num_envs,)
+    """
+    # Skip if motion not initialized
+    if not hasattr(env, '_motion_initialized') or not env._motion_initialized:
+        return torch.zeros(env.num_envs, device=env.device)
+    
+    # Get upper body joint indices (cached)
+    if not hasattr(env, '_upper_body_indices') or env._upper_body_indices is None:
+        return torch.zeros(env.num_envs, device=env.device)
+    
+    upper_body_indices = env._upper_body_indices
+    if len(upper_body_indices) == 0:
+        return torch.zeros(env.num_envs, device=env.device)
+    
+    target_state = get_target_state(env)
+    target_dof = target_state["dof_pos"]
+    
+    # Get current joint positions from robot
+    robot = env.scene["robot"]
+    current_dof = robot.data.joint_pos
+    
+    # Extract only upper body joints
+    target_upper = target_dof[:, upper_body_indices]
+    current_upper = current_dof[:, upper_body_indices]
+    
+    # Compute MEAN squared error for upper body only
+    dof_error = torch.mean(torch.square(current_upper - target_upper), dim=1)
+    
+    reward = torch.exp(-dof_error / (std ** 2))
+    return _safe_reward(reward)
+
+
 def tracking_joint_vel(
     env: ManagerBasedRLEnv,
     std: float = 1.0,
@@ -367,6 +413,114 @@ def feet_distance_penalty(
     penalty = too_close + too_far
     
     return penalty
+
+
+def base_lin_vel_xy_penalty(
+    env: ManagerBasedRLEnv,
+) -> torch.Tensor:
+    """Penalty for base linear velocity in XY plane.
+    
+    Penalizes horizontal movement to encourage the robot to stay in place.
+    This is useful when the robot should be stationary (e.g., upper body only motions).
+    
+    Returns:
+        Penalty tensor of shape (num_envs,) - sum of squared XY velocities.
+    """
+    robot = env.scene["robot"]
+    base_lin_vel = robot.data.root_lin_vel_w  # (num_envs, 3) in world frame
+    
+    # Penalize XY velocity magnitude squared
+    vel_xy_sq = base_lin_vel[:, 0]**2 + base_lin_vel[:, 1]**2
+    
+    return vel_xy_sq
+
+
+def base_ang_vel_penalty(
+    env: ManagerBasedRLEnv,
+) -> torch.Tensor:
+    """Penalty for base angular velocity (yaw rotation).
+    
+    Penalizes rotation to encourage the robot to maintain heading.
+    
+    Returns:
+        Penalty tensor of shape (num_envs,) - squared yaw velocity.
+    """
+    robot = env.scene["robot"]
+    base_ang_vel = robot.data.root_ang_vel_w  # (num_envs, 3) in world frame
+    
+    # Penalize yaw (Z-axis) angular velocity squared
+    return base_ang_vel[:, 2]**2
+
+
+def flat_feet_reward(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward for keeping feet flat on the ground (not on toes).
+    
+    Computes the pitch and roll angles of each foot relative to the ground.
+    Feet should be parallel to the ground (zero pitch/roll) for stable standing.
+    
+    Uses exponential kernel to reward flat feet orientation.
+    
+    Args:
+        env: The environment instance.
+        asset_cfg: Configuration for the robot asset.
+    
+    Returns:
+        Reward tensor of shape (num_envs,) - higher when feet are flat.
+    """
+    robot = env.scene[asset_cfg.name]
+    
+    # Get foot body indices
+    left_foot_idx = robot.find_bodies("left_ankle_roll_link")[0][0]
+    right_foot_idx = robot.find_bodies("right_ankle_roll_link")[0][0]
+    
+    # Get foot orientations in world frame (quaternions: w, x, y, z)
+    body_quat = robot.data.body_quat_w  # (num_envs, num_bodies, 4)
+    left_quat = body_quat[:, left_foot_idx, :]  # (num_envs, 4)
+    right_quat = body_quat[:, right_foot_idx, :]  # (num_envs, 4)
+    
+    # Convert quaternion to projected gravity vector (z-axis of foot in world frame)
+    # For a flat foot, the z-axis should point up (0, 0, 1) in world frame
+    # We compute how aligned the foot's up-vector is with world up
+    
+    def quat_to_up_vector(quat):
+        """Get the up vector (z-axis) of a body given its quaternion."""
+        # quat is (num_envs, 4) with (w, x, y, z) convention
+        w, x, y, z = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
+        
+        # Rotate [0, 0, 1] by quaternion to get up vector in world frame
+        # up_x = 2 * (x*z + w*y)
+        # up_y = 2 * (y*z - w*x)
+        # up_z = 1 - 2 * (x*x + y*y)
+        up_x = 2 * (x * z + w * y)
+        up_y = 2 * (y * z - w * x)
+        up_z = 1 - 2 * (x * x + y * y)
+        
+        return torch.stack([up_x, up_y, up_z], dim=1)  # (num_envs, 3)
+    
+    left_up = quat_to_up_vector(left_quat)
+    right_up = quat_to_up_vector(right_quat)
+    
+    # World up vector
+    world_up = torch.tensor([0.0, 0.0, 1.0], device=left_up.device)
+    
+    # Compute alignment (dot product with world up)
+    # Perfect flat foot: dot product = 1
+    # Foot on toes: dot product < 1 (foot z-axis tilted forward)
+    left_alignment = torch.sum(left_up * world_up, dim=1)  # (num_envs,)
+    right_alignment = torch.sum(right_up * world_up, dim=1)  # (num_envs,)
+    
+    # Average alignment, clamp to valid range
+    alignment = (left_alignment + right_alignment) / 2.0
+    alignment = torch.clamp(alignment, -1.0, 1.0)
+    
+    # Reward: 1.0 when perfectly flat, 0.0 when perpendicular
+    # Using alignment directly as reward (ranges from -1 to 1)
+    reward = alignment
+    
+    return _safe_reward(reward)
 
 
 ##############################################################################

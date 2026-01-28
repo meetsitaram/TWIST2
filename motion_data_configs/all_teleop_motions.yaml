@@ -1,29 +1,53 @@
+# All Teleop Motions - Whole Body Training
+# Goal: Train policy to mimic all recorded teleop sessions
+# 
+# Includes:
+# - baby_steps: Basic standing/small steps (3 motions)
+# - big_steps: Walking with larger strides (2 motions)  
+# - push_balance: Recovery from pushes (2 motions)
+# - stage1_stand_walk: Standing and walking (if present)
+# - stage3_upper_body: Upper body manipulation (14 motions)
+
+name: all_teleop_motions
+root_path: ..
+
 motions:
+# Baby steps - basic balance
 - file: datasets/teleop_motions/baby_steps/steps_001.pkl
   weight: 1.0
 - file: datasets/teleop_motions/baby_steps/steps_002.pkl
   weight: 1.0
 - file: datasets/teleop_motions/baby_steps/steps_003.pkl
   weight: 1.0
+
+# Big steps - walking
 - file: datasets/teleop_motions/big_steps/big_steps_001.pkl
   weight: 1.0
 - file: datasets/teleop_motions/big_steps/big_steps_002.pkl
   weight: 1.0
+
+# Push balance - recovery
 - file: datasets/teleop_motions/push_balance/push_001.pkl
   weight: 1.0
 - file: datasets/teleop_motions/push_balance/push_002.pkl
   weight: 1.0
-- file: datasets/teleop_motions/stage3_upper_body/both-hands-2.pkl
-  weight: 1.0
+
+# Stage 3 upper body - manipulation tasks
 - file: datasets/teleop_motions/stage3_upper_body/both-hands.pkl
+  weight: 1.0
+- file: datasets/teleop_motions/stage3_upper_body/both-hands-2.pkl
   weight: 1.0
 - file: datasets/teleop_motions/stage3_upper_body/cut.pkl
   weight: 1.0
 - file: datasets/teleop_motions/stage3_upper_body/left-hand.pkl
   weight: 1.0
+- file: datasets/teleop_motions/stage3_upper_body/right-hand.pkl
+  weight: 1.0
 - file: datasets/teleop_motions/stage3_upper_body/micro.pkl
   weight: 1.0
 - file: datasets/teleop_motions/stage3_upper_body/open-doors.pkl
+  weight: 1.0
+- file: datasets/teleop_motions/stage3_upper_body/pick-place.pkl
   weight: 1.0
 - file: datasets/teleop_motions/stage3_upper_body/pick-place-2.pkl
   weight: 1.0
@@ -31,15 +55,9 @@ motions:
   weight: 1.0
 - file: datasets/teleop_motions/stage3_upper_body/pick-place-both-hands.pkl
   weight: 1.0
-- file: datasets/teleop_motions/stage3_upper_body/pick-place.pkl
-  weight: 1.0
-- file: datasets/teleop_motions/stage3_upper_body/right-hand.pkl
-  weight: 1.0
-- file: datasets/teleop_motions/stage3_upper_body/too-fast.pkl
-  weight: 1.0
 - file: datasets/teleop_motions/stage3_upper_body/wave.pkl
   weight: 1.0
 - file: datasets/teleop_motions/stage3_upper_body/wipe.pkl
   weight: 1.0
-name: stage2_move
-root_path: ..
+- file: datasets/teleop_motions/stage3_upper_body/too-fast.pkl
+  weight: 0.5  # Lower weight - may have noise
