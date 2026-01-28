@@ -55,63 +55,23 @@ import gymnasium as gym
 import isaaclab_envs
 from isaaclab_envs.g1_motion_mimic_env_cfg import G1MotionMimicEnvCfg
 
-# Motion DOF count (body joints only, no fingers)
-MOTION_DOF_COUNT = 29
+# Import centralized robot configuration
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+TWIST2_ROOT = os.path.dirname(SCRIPT_DIR)
+sys.path.insert(0, TWIST2_ROOT)
+from robot_config import G1RobotConfig
 
-# Joint mapping from MuJoCo (motion data) to Isaac Lab
-# MuJoCo index -> Isaac Lab joint name (we'll find the index at runtime)
-MUJOCO_TO_ISAACLAB_JOINT_NAMES = {
-    # Left leg
-    0: "left_hip_pitch_joint",      # left_hip_pitch_joint
-    1: "left_hip_roll_joint",       # left_hip_roll_joint
-    2: "left_hip_yaw_joint",        # left_hip_yaw_joint
-    3: "left_knee_joint",           # left_knee_joint
-    4: "left_ankle_pitch_joint",    # left_ankle_pitch_joint
-    5: "left_ankle_roll_joint",     # left_ankle_roll_joint
-    # Right leg
-    6: "right_hip_pitch_joint",     # right_hip_pitch_joint
-    7: "right_hip_roll_joint",      # right_hip_roll_joint
-    8: "right_hip_yaw_joint",       # right_hip_yaw_joint
-    9: "right_knee_joint",          # right_knee_joint
-    10: "right_ankle_pitch_joint",  # right_ankle_pitch_joint
-    11: "right_ankle_roll_joint",   # right_ankle_roll_joint
-    # Waist -> torso (Isaac Lab only has 1 torso joint, we'll map waist_yaw to it)
-    12: "torso_joint",              # waist_yaw_joint -> torso_joint
-    13: None,                       # waist_roll_joint - NO EQUIVALENT in Isaac Lab
-    14: None,                       # waist_pitch_joint - NO EQUIVALENT in Isaac Lab
-    # Left arm
-    15: "left_shoulder_pitch_joint",  # left_shoulder_pitch_joint
-    16: "left_shoulder_roll_joint",   # left_shoulder_roll_joint
-    17: "left_shoulder_yaw_joint",    # left_shoulder_yaw_joint
-    18: "left_elbow_pitch_joint",     # left_elbow_joint -> left_elbow_pitch_joint
-    19: "left_elbow_roll_joint",      # left_wrist_roll_joint -> left_elbow_roll_joint (closest)
-    20: None,                         # left_wrist_pitch_joint - NO EQUIVALENT
-    21: None,                         # left_wrist_yaw_joint - NO EQUIVALENT
-    # Right arm
-    22: "right_shoulder_pitch_joint", # right_shoulder_pitch_joint
-    23: "right_shoulder_roll_joint",  # right_shoulder_roll_joint
-    24: "right_shoulder_yaw_joint",   # right_shoulder_yaw_joint
-    25: "right_elbow_pitch_joint",    # right_elbow_joint -> right_elbow_pitch_joint
-    26: "right_elbow_roll_joint",     # right_wrist_roll_joint -> right_elbow_roll_joint (closest)
-    27: None,                         # right_wrist_pitch_joint - NO EQUIVALENT
-    28: None,                         # right_wrist_yaw_joint - NO EQUIVALENT
-}
+# Use centralized config
+MOTION_DOF_COUNT = G1RobotConfig.MUJOCO_NUM_JOINTS
+MUJOCO_JOINT_ORDER = G1RobotConfig.MUJOCO_JOINT_ORDER
 
 
 def build_joint_mapping(joint_names: list) -> dict:
-    """Build a mapping from MuJoCo motion indices to Isaac Lab joint indices."""
-    # Create name -> index lookup for Isaac Lab joints
-    il_name_to_idx = {name: idx for idx, name in enumerate(joint_names)}
+    """Build a mapping from MuJoCo motion indices to Isaac Lab joint indices.
     
-    # Build mapping: mujoco_idx -> isaaclab_idx (or None if no equivalent)
-    mapping = {}
-    for mj_idx, il_name in MUJOCO_TO_ISAACLAB_JOINT_NAMES.items():
-        if il_name is not None and il_name in il_name_to_idx:
-            mapping[mj_idx] = il_name_to_idx[il_name]
-        else:
-            mapping[mj_idx] = None
-    
-    return mapping
+    Uses centralized G1RobotConfig for consistent mapping.
+    """
+    return G1RobotConfig.build_mujoco_to_isaaclab_mapping(joint_names)
 
 
 def load_motion(motion_file: str) -> dict:
@@ -198,20 +158,7 @@ def main():
     print(f"[Robot] Motion DOFs: {MOTION_DOF_COUNT}")
     print(f"[Robot] Extra joints (fingers): {num_joints - MOTION_DOF_COUNT}")
     
-    # Expected MuJoCo 29-DOF joint order (from motion data)
-    MUJOCO_JOINT_ORDER = [
-        "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint",
-        "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
-        "right_hip_pitch_joint", "right_hip_roll_joint", "right_hip_yaw_joint",
-        "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
-        "waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint",
-        "left_shoulder_pitch_joint", "left_shoulder_roll_joint", "left_shoulder_yaw_joint",
-        "left_elbow_joint", "left_wrist_roll_joint", "left_wrist_pitch_joint", "left_wrist_yaw_joint",
-        "right_shoulder_pitch_joint", "right_shoulder_roll_joint", "right_shoulder_yaw_joint",
-        "right_elbow_joint", "right_wrist_roll_joint", "right_wrist_pitch_joint", "right_wrist_yaw_joint",
-    ]
-    
-    # Build joint mapping
+    # Build joint mapping using centralized config
     joint_mapping = build_joint_mapping(joint_names)
     
     print("\n[Robot] Joint mapping (MuJoCo motion -> Isaac Lab):")

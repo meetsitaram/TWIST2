@@ -90,6 +90,10 @@ def main():
     parser.add_argument("--countdown", type=int, default=10,
                        help="Countdown seconds before starting (default: 10)")
     
+    # MuJoCo visualization
+    parser.add_argument("--mujoco_viz", action="store_true",
+                       help="Show MuJoCo viewer with the IK'd robot pose (input visualization)")
+    
     args = parser.parse_args()
     
     # Import Redis
@@ -154,6 +158,8 @@ def main():
     )
     
     # Create retargeter (IK-based or direct mapping)
+    mujoco_model_path = os.path.join(TWIST2_ROOT, "assets/g1/g1_mocap_29dof.xml")
+    
     if args.direct:
         print("[Retarget] Using DIRECT joint mapping (faster)")
         retargeter = MediaPipeToG1Direct()
@@ -161,10 +167,38 @@ def main():
     else:
         print("[Retarget] Using IK solver (mink)")
         retargeter = EndEffectorIKRetargeter(
-            model_path=os.path.join(TWIST2_ROOT, "assets/g1/g1_mocap_29dof.xml"),
+            model_path=mujoco_model_path,
             verbose=False,
         )
         use_direct = False
+    
+    # MuJoCo viewer for input visualization
+    mj_model = None
+    mj_data = None
+    mj_viewer = None
+    
+    if args.mujoco_viz:
+        try:
+            import mujoco
+            import mujoco.viewer
+            
+            print("[MuJoCo] Loading model for visualization...")
+            mj_model = mujoco.MjModel.from_xml_path(mujoco_model_path)
+            mj_data = mujoco.MjData(mj_model)
+            
+            # Launch passive viewer (non-blocking)
+            mj_viewer = mujoco.viewer.launch_passive(mj_model, mj_data)
+            mj_viewer.cam.azimuth = 180
+            mj_viewer.cam.elevation = -20
+            mj_viewer.cam.distance = 3.0
+            
+            print("[MuJoCo] Viewer launched - showing IK'd robot pose")
+        except ImportError:
+            print("[MuJoCo] ERROR: mujoco not installed. Install with: pip install mujoco")
+            args.mujoco_viz = False
+        except Exception as e:
+            print(f"[MuJoCo] ERROR: Could not create viewer: {e}")
+            args.mujoco_viz = False
     
     # Start streaming
     streamer.start()
@@ -282,6 +316,17 @@ def main():
                             fail_ik_none += 1
                     
                     if result is not None:
+                        # Update MuJoCo viewer if enabled
+                        if args.mujoco_viz and mj_viewer is not None and mj_viewer.is_running():
+                            # Set joint positions (qpos[7:] for joints after floating base)
+                            # The model has 7 DOF floating base + 29 joint DOFs
+                            mj_data.qpos[7:7+len(dof_pos)] = dof_pos
+                            # Forward kinematics to update body positions
+                            import mujoco
+                            mujoco.mj_forward(mj_model, mj_data)
+                            # Sync viewer
+                            mj_viewer.sync()
+                        
                         # Publish to Redis
                         t2 = time.time()
                         redis_client.set(
@@ -373,6 +418,12 @@ def main():
     finally:
         streamer.stop()
         cv2.destroyAllWindows()
+        # Close MuJoCo viewer
+        if mj_viewer is not None:
+            try:
+                mj_viewer.close()
+            except:
+                pass
         print("[Teleop] Cleanup complete")
     
     # Final stats

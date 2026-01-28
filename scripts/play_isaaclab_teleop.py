@@ -97,6 +97,9 @@ parser.add_argument("--blend_waist", action="store_true",
                     help="Also control waist joints from teleop (default: policy controls waist)")
 parser.add_argument("--blend_alpha", type=float, default=1.0,
                     help="Blend factor for teleop: 0=policy only, 1=teleop only (default: 1.0)")
+parser.add_argument("--direct_override", action="store_true",
+                    help="Directly override upper body joint ACTIONS instead of injecting targets. "
+                         "This bypasses policy learning and directly sets joint positions.")
 
 # Debug
 parser.add_argument("--debug_timing", action="store_true",
@@ -105,6 +108,14 @@ parser.add_argument("--no_realtime", action="store_true",
                     help="Disable real-time throttling (run as fast as possible)")
 parser.add_argument("--publish_state", action="store_true",
                     help="Publish robot state to Redis for external viewer (use with mujoco_state_viewer.py)")
+
+# Real-time optimization settings
+parser.add_argument("--fast_render", action="store_true",
+                    help="Optimize for real-time: skip render frames, reduce solver iterations")
+parser.add_argument("--render_interval", type=int, default=None,
+                    help="Render every N physics steps (default: 2, use higher for speed)")
+parser.add_argument("--physics_dt", type=float, default=None,
+                    help="Physics timestep in seconds (default: 0.0167 = 60Hz)")
 
 # AppLauncher args (adds --headless, etc.)
 AppLauncher.add_app_launcher_args(parser)
@@ -144,69 +155,28 @@ if args.publish_state:
 
 
 ##############################################################################
-# JOINT INDEX DEFINITIONS
+# JOINT INDEX DEFINITIONS - Using centralized G1RobotConfig
 ##############################################################################
 
-# Number of DOFs in motion data (MuJoCo 29-DOF model)
-MOTION_DOF_COUNT = 29
+# Import centralized robot configuration
+import sys
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+TWIST2_ROOT = os.path.dirname(SCRIPT_DIR)
+sys.path.insert(0, TWIST2_ROOT)
+from robot_config import G1RobotConfig
 
-# Joint mapping from MuJoCo motion indices to Isaac Lab joint names
-MUJOCO_TO_ISAACLAB_JOINT_NAMES = {
-    # Left leg (MuJoCo indices 0-5)
-    0: "left_hip_pitch_joint",
-    1: "left_hip_roll_joint",
-    2: "left_hip_yaw_joint",
-    3: "left_knee_joint",
-    4: "left_ankle_pitch_joint",
-    5: "left_ankle_roll_joint",
-    # Right leg (MuJoCo indices 6-11)
-    6: "right_hip_pitch_joint",
-    7: "right_hip_roll_joint",
-    8: "right_hip_yaw_joint",
-    9: "right_knee_joint",
-    10: "right_ankle_pitch_joint",
-    11: "right_ankle_roll_joint",
-    # Waist (MuJoCo indices 12-14) -> Isaac Lab has only torso_joint
-    12: "torso_joint",       # waist_yaw -> torso
-    13: None,                # waist_roll - NO EQUIVALENT
-    14: None,                # waist_pitch - NO EQUIVALENT
-    # Left arm (MuJoCo indices 15-21)
-    15: "left_shoulder_pitch_joint",
-    16: "left_shoulder_roll_joint",
-    17: "left_shoulder_yaw_joint",
-    18: "left_elbow_pitch_joint",
-    19: "left_elbow_roll_joint",
-    20: None,                        # wrist_pitch - NO EQUIVALENT
-    21: None,                        # wrist_yaw - NO EQUIVALENT
-    # Right arm (MuJoCo indices 22-28)
-    22: "right_shoulder_pitch_joint",
-    23: "right_shoulder_roll_joint",
-    24: "right_shoulder_yaw_joint",
-    25: "right_elbow_pitch_joint",
-    26: "right_elbow_roll_joint",
-    27: None,                        # wrist_pitch - NO EQUIVALENT
-    28: None,                        # wrist_yaw - NO EQUIVALENT
-}
-
-# MuJoCo indices for upper body (arms) - for teleop overlay
-MUJOCO_UPPER_BODY_INDICES = list(range(15, 29))  # Arms in motion data
-
-# MuJoCo indices for waist
-MUJOCO_WAIST_INDICES = [12, 13, 14]
+# Convenience aliases from centralized config
+MOTION_DOF_COUNT = G1RobotConfig.MUJOCO_NUM_JOINTS
+MUJOCO_UPPER_BODY_INDICES = G1RobotConfig.MUJOCO_UPPER_BODY_INDICES
+MUJOCO_WAIST_INDICES = G1RobotConfig.MUJOCO_WAIST_INDICES
 
 
 def build_joint_mapping(joint_names: list) -> dict:
-    """Build mapping from MuJoCo motion indices to Isaac Lab joint indices."""
-    il_name_to_idx = {name: idx for idx, name in enumerate(joint_names)}
+    """Build mapping from MuJoCo motion indices to Isaac Lab joint indices.
     
-    mapping = {}
-    for mj_idx, il_name in MUJOCO_TO_ISAACLAB_JOINT_NAMES.items():
-        if il_name is not None and il_name in il_name_to_idx:
-            mapping[mj_idx] = il_name_to_idx[il_name]
-        else:
-            mapping[mj_idx] = None
-    
-    return mapping
+    Uses centralized G1RobotConfig for consistent mapping.
+    """
+    return G1RobotConfig.build_mujoco_to_isaaclab_mapping(joint_names)
 
 
 ##############################################################################
@@ -418,6 +388,35 @@ def main():
     env_cfg.scene.num_envs = args.num_envs
     env_cfg.motion_file = os.path.join(TWIST2_ROOT, args.env_motion_file)
     
+    # Configure viewport camera to follow robot
+    env_cfg.viewer.eye = (3.0, 3.0, 2.0)  # Camera position offset
+    env_cfg.viewer.lookat = (0.0, 0.0, 0.8)  # Look at robot torso height
+    env_cfg.viewer.origin_type = "asset_root"  # Follow robot root
+    env_cfg.viewer.asset_name = "robot"  # Track the robot asset
+    print("[Play] Camera tracking: following robot")
+    
+    # Real-time optimization settings
+    if args.fast_render:
+        # Skip render frames for speed (render every 4th physics step)
+        env_cfg.sim.render_interval = 4
+        # Use faster physics settings
+        env_cfg.sim.dt = 1.0 / 60.0  # 60Hz physics
+        env_cfg.decimation = 1  # Action every physics step
+        # Reduce solver iterations for speed (may reduce accuracy)
+        env_cfg.sim.physx.num_position_iterations = 4  # Default is usually 4-8
+        env_cfg.sim.physx.num_velocity_iterations = 0  # Default is 0-1
+        print("[Play] Fast render mode: render_interval=4, dt=1/60, decimation=1")
+    
+    # Override render interval if specified
+    if args.render_interval is not None:
+        env_cfg.sim.render_interval = args.render_interval
+        print(f"[Play] Render interval: {args.render_interval}")
+    
+    # Override physics dt if specified
+    if args.physics_dt is not None:
+        env_cfg.sim.dt = args.physics_dt
+        print(f"[Play] Physics dt: {args.physics_dt}s ({1.0/args.physics_dt:.0f}Hz)")
+    
     # Disable all push/disturbance events for clean teleop visualization
     env_cfg.events.base_external_force_torque = None
     env_cfg.events.push_robot = None
@@ -505,7 +504,7 @@ def main():
                 policy_actions = actor_critic.act_inference(obs)
             t_policy = time.time() - t0
             
-            # Apply teleop overlay if enabled
+            # Inject teleop targets into observation space (proper approach)
             t1 = time.time()
             t_redis = 0
             if teleop_source is not None:
@@ -514,47 +513,87 @@ def main():
                 
                 if teleop_dof is not None:
                     if not teleop_active:
-                        print(f"[Play] Teleop active! Received {len(teleop_dof)} DOFs")
+                        print(f"[Play] Teleop active! Injecting {len(teleop_dof)} DOFs (MuJoCo order)")
+                        # Print joint mapping for debugging using centralized config
+                        print(f"[Play] Joint mapping (MuJoCo -> Isaac Lab):")
+                        for mj_idx in [15, 16, 17, 18, 19, 22, 23, 24, 25, 26]:
+                            il_idx = joint_mapping.get(mj_idx)
+                            mj_name = G1RobotConfig.MUJOCO_JOINT_ORDER[mj_idx] if mj_idx < len(G1RobotConfig.MUJOCO_JOINT_ORDER) else "?"
+                            print(f"  MJ[{mj_idx}] -> IL[{il_idx}] ({mj_name})")
                     teleop_active = True
                     
-                    alpha = args.blend_alpha
-                    
-                    # Debug: print first few teleop values periodically
+                    # Debug: print teleop values periodically (MuJoCo indices)
                     if step % 100 == 0:
                         l_shoulder = teleop_dof[15] if len(teleop_dof) > 15 else 0
+                        l_elbow = teleop_dof[18] if len(teleop_dof) > 18 else 0
                         r_shoulder = teleop_dof[22] if len(teleop_dof) > 22 else 0
-                        print(f"\r[Teleop] L_shoulder={l_shoulder:.2f} R_shoulder={r_shoulder:.2f}", end="")
+                        r_elbow = teleop_dof[25] if len(teleop_dof) > 25 else 0
+                        print(f"\r[Teleop] L_sh={l_shoulder:.2f} L_el={l_elbow:.2f} R_sh={r_shoulder:.2f} R_el={r_elbow:.2f}", end="")
                     
-                    # For each upper body joint in MuJoCo motion data
-                    for mj_idx in MUJOCO_UPPER_BODY_INDICES:
-                        il_idx = joint_mapping.get(mj_idx)
-                        if il_idx is not None and mj_idx < len(teleop_dof):
-                            # Get teleop target (absolute position)
-                            teleop_val = float(teleop_dof[mj_idx])
-                            # Convert to relative action (delta from default)
-                            teleop_action = teleop_val - default_joint_pos[il_idx]
-                            # Blend with policy action
-                            policy_actions[:, il_idx] = (
-                                (1 - alpha) * policy_actions[:, il_idx] + 
-                                alpha * teleop_action
-                            )
+                    # NOTE: teleop_dof is in MuJoCo order (29 DOFs)
+                    # This matches the motion library format that the policy was trained on
+                    teleop_tensor = torch.tensor(teleop_dof, dtype=torch.float32, device="cuda:0")
                     
-                    # Waist: optionally from teleop
-                    if args.blend_waist:
-                        for mj_idx in MUJOCO_WAIST_INDICES:
-                            il_idx = joint_mapping.get(mj_idx)
-                            if il_idx is not None and mj_idx < len(teleop_dof):
-                                teleop_val = float(teleop_dof[mj_idx])
-                                teleop_action = teleop_val - default_joint_pos[il_idx]
-                                policy_actions[:, il_idx] = (
-                                    (1 - alpha) * policy_actions[:, il_idx] + 
-                                    alpha * teleop_action
-                                )
+                    # Get underlying environment (unwrap RSL-RL wrapper)
+                    base_env = env.unwrapped
+                    
+                    if args.direct_override:
+                        # DIRECT OVERRIDE MODE: Bypass policy for upper body joints
+                        # Directly set the action values for upper body joints to move them
+                        # to the teleop target positions.
+                        #
+                        # Action scaling from velocity_env_cfg.py:
+                        #   joint_pos = default_pos + action * scale  (where scale=0.5)
+                        # Therefore:
+                        #   action = (target_pos - default_pos) / scale
+                        
+                        ACTION_SCALE = 0.5  # From velocity_env_cfg.py JointPositionActionCfg
+                        
+                        # Remap teleop from MuJoCo to Isaac Lab order
+                        teleop_il = base_env._remap_mujoco_to_isaaclab(teleop_tensor.unsqueeze(0))
+                        
+                        # Get default joint positions
+                        default_pos = robot.data.default_joint_pos  # (num_envs, num_joints)
+                        
+                        # Get upper body indices from env
+                        upper_body_indices = base_env._upper_body_indices
+                        
+                        # Override policy actions for upper body joints
+                        for il_idx in upper_body_indices:
+                            if il_idx < teleop_il.shape[1] and il_idx < policy_actions.shape[1]:
+                                # Direct position control: action = (target - default) / scale
+                                target_pos = teleop_il[0, il_idx]
+                                default_val = default_pos[0, il_idx]
+                                action_val = (target_pos - default_val) / ACTION_SCALE
+                                # Broadcast to all envs
+                                policy_actions[:, il_idx] = action_val
+                        
+                        # Debug: Print first few joints every 100 steps
+                        if step % 100 == 0:
+                            # Show a few key joints
+                            debug_joints = [(15, "L_sh_pitch"), (16, "L_sh_roll"), (18, "L_elbow")]
+                            debug_str = " [DIRECT:"
+                            for mj_idx, name in debug_joints:
+                                il_idx_check = joint_mapping.get(mj_idx)
+                                if il_idx_check is not None and il_idx_check < teleop_il.shape[1]:
+                                    tgt = teleop_il[0, il_idx_check].item()
+                                    dfl = default_pos[0, il_idx_check].item()
+                                    act = (tgt - dfl) / ACTION_SCALE
+                                    debug_str += f" {name}:tgt={tgt:.2f},dfl={dfl:.2f},act={act:.2f}"
+                            debug_str += "]"
+                            print(debug_str, end="")
+                    else:
+                        # OBSERVATION INJECTION MODE: Policy sees teleop targets and learns to track
+                        # Inject teleop targets - upper body only so policy maintains lower body balance
+                        upper_body_only = not args.blend_waist  # If waist blending, include waist too
+                        base_env.set_teleop_targets(teleop_tensor, upper_body_only=upper_body_only)
                 
                 else:
                     # Teleop source ended or unavailable
                     if teleop_active:
-                        print("\n[Play] Teleop source ended, continuing with policy only")
+                        print("\n[Play] Teleop source ended, clearing targets")
+                        base_env = env.unwrapped
+                        base_env.clear_teleop_targets()
                         teleop_active = False
             
             # Step environment
@@ -575,6 +614,7 @@ def main():
                 
                 state = {
                     'joint_pos': il_joint_pos.tolist(),
+                    'joint_names': joint_names,  # Isaac Lab joint order
                     'root_pos': root_pos.tolist(),
                     'root_quat': root_quat.tolist(),
                     'step': step,

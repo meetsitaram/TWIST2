@@ -1571,3 +1571,264 @@ See `docs/ISAACLAB_OBSERVATION_SPEC.md` for detailed observation/action mappings
 3. **Tune blend parameters**: May need to adjust blend_alpha for smooth transitions
 4. **Sim2Real deployment**: Create real robot deployment script with proper mappings
 5. **Test on real G1**: Verify in simulation matches real hardware
+
+---
+
+## Session Notes - Jan 27-28, 2026 (Curriculum Training & Teleop Debugging)
+
+### Major Topics Covered
+
+1. **4-Stage Curriculum Training Pipeline**
+2. **MuJoCo ↔ Isaac Lab Joint Mapping Issues**
+3. **Direct Override vs Policy Tracking for Teleop**
+4. **MuJoCo Viewer for Input Visualization**
+5. **Isaac Lab Real-Time Optimization**
+6. **QC Comparison Tool for Debugging**
+
+---
+
+### 1. Curriculum Training Pipeline (4 Stages)
+
+Implemented a structured curriculum training approach:
+
+| Stage | Config Class | Description | Iterations |
+|-------|--------------|-------------|------------|
+| 1 | `G1MotionMimicEnvCfg` | Basic standing balance | 5000-10000 |
+| 2 | `G1MotionMimicEnvCfg_STAGE2` | Walking and movement | 5000-10000 |
+| 3 | `G1MotionMimicEnvCfg_STAGE3` | Upper body control (stable) | 10000 |
+| 4 | `G1MotionMimicEnvCfg_STAGE3_ROBUST` | Robust upper body (with pushes) | 5000 |
+
+**Training Script:**
+```bash
+cd ~/projects/g1-pick-n-place/TWIST2
+conda activate gmr
+
+python scripts/train_curriculum.py --iterations 10000 --num_envs 4096
+```
+
+**Key Files Created/Modified:**
+- `g1_motion_mimic_env_cfg.py`: Added `G1MotionMimicEnvCfg_STAGE2`, updated `G1MotionMimicEnvCfg_STAGE3_ROBUST`
+- `train_curriculum.py`: Multi-stage training orchestrator
+- `motion_data_configs/curriculum_stage*.yaml`: Per-stage motion configs
+
+**Training Crash Fix:**
+- Error: `RuntimeError: normal expects all elements of std >= 0.0`
+- Cause: NaN propagation in rewards causing policy log_std to become NaN
+- Solution: Added `_safe_reward()` helper to clamp rewards and replace NaN/Inf with 0
+- Also reduced push forces in Stage 4: ±0.5 → ±0.3 m/s, interval 10-15s → 12-20s
+
+---
+
+### 2. MuJoCo ↔ Isaac Lab Joint Mapping Issues
+
+**Problem:** The G1 robot has different joint orderings in MuJoCo vs Isaac Lab:
+
+| System | Joint Order | Notes |
+|--------|-------------|-------|
+| MuJoCo | 29 DOF (body-grouped) | Left leg, right leg, waist, left arm, right arm |
+| Isaac Lab | 37 DOF (alphabetical) | Different naming for elbows, no wrist pitch/yaw |
+
+**Joint Name Differences:**
+
+| MuJoCo Name | Isaac Lab Name |
+|-------------|----------------|
+| `left_elbow_joint` | `left_elbow_pitch_joint` |
+| `left_wrist_roll_joint` | `left_elbow_roll_joint` |
+| `left_wrist_pitch_joint` | (NO EQUIVALENT) |
+| `left_wrist_yaw_joint` | (NO EQUIVALENT) |
+| `waist_roll_joint` | (NO EQUIVALENT) |
+| `waist_pitch_joint` | (NO EQUIVALENT) |
+| `waist_yaw_joint` | `torso_joint` |
+
+**Centralized Mapping:**
+All mappings centralized in `robot_config.py`:
+```python
+from robot_config import G1RobotConfig
+
+# Get MuJoCo → Isaac Lab index mapping
+mapping = G1RobotConfig.build_mujoco_to_isaaclab_mapping(isaaclab_joint_names)
+
+# Remap DOFs from MuJoCo to Isaac Lab order
+il_dof = G1RobotConfig.remap_mujoco_to_isaaclab_numpy(mj_dof, isaaclab_joint_names)
+```
+
+---
+
+### 3. Direct Override vs Policy Tracking for Teleop
+
+**Problem:** When running teleop with trained policy, upper body movements were very small/negligible.
+
+**Two Approaches:**
+
+#### A. Observation Injection (Policy Tracking)
+- Teleop targets injected into observation space
+- Policy sees targets and learns to track them
+- Requires training to work well
+- **Issue:** Policy not responding well to upper body targets
+
+#### B. Direct Action Override (New)
+- Teleop directly sets upper body joint actions
+- Policy only controls lower body for balance
+- No training needed for upper body tracking
+- **Solution:** Added `--direct_override` flag
+
+**Direct Override Formula:**
+```python
+# Isaac Lab action formula: joint_pos = default_pos + action * 0.5
+# Therefore: action = (target_pos - default_pos) / 0.5
+ACTION_SCALE = 0.5
+action_val = (target_pos - default_val) / ACTION_SCALE
+```
+
+**Command:**
+```bash
+python scripts/play_isaaclab_teleop.py \
+    --checkpoint ... \
+    --teleop redis \
+    --direct_override
+```
+
+---
+
+### 4. MuJoCo Viewer for Input Visualization
+
+**Problem:** Need to compare input poses (what we're sending) vs output poses (what Isaac Lab shows).
+
+**Solution:** Added `--mujoco_viz` flag to `isaac_lab_teleop_publisher.py`
+
+**Features:**
+- Opens MuJoCo passive viewer showing IK'd robot pose
+- Updates in real-time as teleop data comes in
+- Allows side-by-side comparison with Isaac Lab viewer
+
+**Command:**
+```bash
+# Terminal 1: Publisher with MuJoCo viewer
+python isaac_lab_teleop_publisher.py --display --mujoco_viz
+
+# Terminal 2: Isaac Lab with direct override
+python scripts/play_isaaclab_teleop.py \
+    --checkpoint ... \
+    --teleop redis \
+    --direct_override
+```
+
+---
+
+### 5. Isaac Lab Real-Time Optimization
+
+**Problem:** Isaac Lab viewport rendering was slow, not matching real-time.
+
+**Solutions Added:**
+
+| Flag | Effect |
+|------|--------|
+| `--fast_render` | Skip render frames (4x), 60Hz physics, reduced solver |
+| `--render_interval N` | Custom: render every N physics steps |
+| `--physics_dt 0.02` | Custom physics timestep |
+| `--no_realtime` | Disable sleep throttling |
+
+**Optimized Command:**
+```bash
+python scripts/play_isaaclab_teleop.py \
+    --checkpoint ... \
+    --teleop redis \
+    --direct_override \
+    --fast_render \
+    --no_realtime
+```
+
+**What `--fast_render` does:**
+```python
+env_cfg.sim.render_interval = 4  # Render every 4th step
+env_cfg.sim.dt = 1.0 / 60.0      # 60Hz physics
+env_cfg.decimation = 1           # Action every step
+env_cfg.sim.physx.num_position_iterations = 4  # Faster solver
+```
+
+---
+
+### 6. QC Comparison Tool for Debugging
+
+**Problem:** Significant tracking error (~20-27°) on some joints. Need to identify where disconnect happens.
+
+**Solution:** Created `teleop_qc_compare.py` to compare input vs output in real-time.
+
+**Features:**
+- Reads teleop input from Redis (MuJoCo order)
+- Reads robot state from Isaac Lab (via `--publish_state`)
+- Compares upper body joints
+- Flags errors >10° or >20°
+- Optional CSV logging
+
+**Command (3-terminal setup):**
+```bash
+# Terminal 1: Teleop publisher
+python isaac_lab_teleop_publisher.py --display --mujoco_viz
+
+# Terminal 2: Isaac Lab with state publishing
+python scripts/play_isaaclab_teleop.py \
+    --checkpoint ... \
+    --teleop redis \
+    --direct_override \
+    --publish_state \
+    --fast_render
+
+# Terminal 3: QC comparison
+python deploy_real/teleop_qc_compare.py
+```
+
+**Output Example:**
+```
+Joint                          Input     Output      Error   Err(deg)
+----------------------------------------------------------------------
+left_shoulder_pitch_joint     -0.731     -0.645     -0.087        5.0
+left_shoulder_roll_joint       0.113      0.597     -0.484       27.7 *** LARGE ***
+left_elbow_joint              -0.085      0.194     -0.279       16.0 ** 
+```
+
+---
+
+### Files Created/Modified Today
+
+| File | Changes |
+|------|---------|
+| `g1_motion_mimic_env_cfg.py` | Added STAGE2, updated STAGE3_ROBUST with gentler pushes |
+| `motion_mdp.py` | Added `_safe_reward()` for NaN protection |
+| `train_curriculum.py` | 4-stage curriculum training |
+| `play_isaaclab_teleop.py` | Added `--direct_override`, `--fast_render`, `--publish_state` with joint_names |
+| `isaac_lab_teleop_publisher.py` | Added `--mujoco_viz` for input visualization |
+| `teleop_qc_compare.py` | NEW: QC comparison tool |
+| `rsl_rl_ppo_cfg.py` | Already had gradient clipping |
+
+---
+
+### Key Lessons Learned
+
+1. **Joint mapping is critical**: Always verify MuJoCo ↔ Isaac Lab joint correspondence
+2. **Action scaling matters**: Isaac Lab uses `joint_pos = default + action * 0.5`
+3. **NaN protection**: Add safeguards to reward functions to prevent training crashes
+4. **Debug with visualization**: MuJoCo viewer for input, Isaac Lab for output, QC tool for comparison
+5. **Real-time requires optimization**: Skip render frames, reduce solver iterations
+
+---
+
+### Current Status (Jan 28, 2026)
+
+**Working:**
+- 4-stage curriculum training pipeline
+- Direct override teleop with `--direct_override`
+- MuJoCo viewer for input visualization
+- QC comparison tool
+- Real-time optimization flags
+
+**Issues Being Debugged:**
+- ~20-27° tracking error on shoulder roll/yaw joints
+- Slow Isaac Lab viewport response (improved with `--fast_render`)
+- Need to verify action scaling formula is correct
+
+**Next Steps:**
+1. Debug large tracking errors using QC tool output
+2. Verify action scaling by printing intermediate values
+3. Consider removing action scale (set to 1.0) for direct override
+4. Resume curriculum training after fixes

@@ -13,6 +13,11 @@ from isaaclab.envs import ManagerBasedRLEnv
 
 from .motion_lib import MotionLib
 
+# Import centralized robot configuration
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from robot_config import G1RobotConfig
+
 if TYPE_CHECKING:
     from .g1_motion_mimic_env_cfg import G1MotionMimicEnvCfg
 
@@ -45,6 +50,10 @@ class G1MotionMimicEnv(ManagerBasedRLEnv):
         self.motion_ids = None
         self.motion_start_times = None
         
+        # Teleop target override (for live streaming)
+        self._teleop_targets = None  # Dict with dof_pos, etc. or None
+        self._teleop_upper_body_only = True  # Only override upper body joints
+        
         # Store config for later use
         self._motion_file = cfg.motion_file
         self._key_bodies = cfg.key_bodies
@@ -55,6 +64,9 @@ class G1MotionMimicEnv(ManagerBasedRLEnv):
         
         # Now initialize motion library (after parent sets up device, num_envs)
         self._init_motion_lib()
+        
+        # Compute upper body joint indices for teleop (Isaac Lab joint order)
+        self._init_upper_body_indices()
         
         print(f"[G1MotionMimicEnv] Initialized with {self.motion_lib.num_motions} motions")
     
@@ -87,6 +99,49 @@ class G1MotionMimicEnv(ManagerBasedRLEnv):
         self._reset_motion_ids(torch.arange(self.num_envs, device=self.device))
         
         self._motion_initialized = True
+    
+    def _init_upper_body_indices(self):
+        """Initialize joint mapping using centralized G1RobotConfig.
+        
+        This is critical because MuJoCo motion data uses a different joint order
+        than Isaac Lab's robot. We must remap motion data to Isaac Lab order.
+        """
+        robot = self.scene["robot"]
+        self._isaaclab_joint_names = list(robot.joint_names)
+        
+        # Build mapping using centralized config
+        self._mujoco_to_isaaclab_mapping = G1RobotConfig.build_mujoco_to_isaaclab_mapping(
+            self._isaaclab_joint_names
+        )
+        
+        # Get upper body indices (Isaac Lab order)
+        self._upper_body_indices = G1RobotConfig.get_isaaclab_upper_body_indices(
+            self._isaaclab_joint_names
+        )
+        
+        mapped_count = sum(1 for v in self._mujoco_to_isaaclab_mapping.values() if v is not None)
+        print(f"[G1MotionMimicEnv] Joint mapping: {mapped_count}/29 MuJoCo joints mapped to Isaac Lab")
+        print(f"[G1MotionMimicEnv] Upper body indices (IL order): {self._upper_body_indices}")
+    
+    def _remap_mujoco_to_isaaclab(self, mujoco_dof: torch.Tensor) -> torch.Tensor:
+        """Remap DOF positions from MuJoCo order to Isaac Lab order.
+        
+        Uses centralized G1RobotConfig for consistent joint mapping.
+        
+        Args:
+            mujoco_dof: Joint positions in MuJoCo order, shape (num_envs, 29)
+        
+        Returns:
+            Joint positions in Isaac Lab order, shape (num_envs, num_joints)
+        """
+        robot = self.scene["robot"]
+        default_pos = robot.data.default_joint_pos[:1]
+        
+        return G1RobotConfig.remap_mujoco_to_isaaclab_torch(
+            mujoco_dof,
+            self._isaaclab_joint_names,
+            default_pos,
+        )
     
     def _reset_motion_ids(self, env_ids: torch.Tensor):
         """Reset motion assignments for specified environments.
@@ -187,18 +242,69 @@ class G1MotionMimicEnv(ManagerBasedRLEnv):
         
         motion_state = self.motion_lib.get_motion_state(self.motion_ids, motion_time)
         
-        # Handle DOF count mismatch (motion may have fewer DOFs than robot)
-        motion_dof_count = motion_state["dof_pos"].shape[1]
-        if motion_dof_count < num_joints:
-            # Pad with robot's default joint positions for extra joints (fingers, etc.)
-            default_pos = robot.data.default_joint_pos[0, motion_dof_count:]
-            padded_pos = torch.zeros(self.num_envs, num_joints, device=self.device)
-            padded_pos[:, :motion_dof_count] = motion_state["dof_pos"]
-            padded_pos[:, motion_dof_count:] = default_pos
-            motion_state["dof_pos"] = padded_pos
+        # CRITICAL: Remap motion data from MuJoCo order to Isaac Lab order
+        # Motion data uses MuJoCo joint order (29 DOFs), but robot uses Isaac Lab order
+        # The joint indices are DIFFERENT between these two formats!
+        motion_state["dof_pos"] = self._remap_mujoco_to_isaaclab(motion_state["dof_pos"])
+        motion_state["dof_vel"] = self._remap_mujoco_to_isaaclab(motion_state["dof_vel"])
+        
+        # Apply teleop override if set (teleop data is also in MuJoCo order)
+        if self._teleop_targets is not None:
+            motion_state = self._apply_teleop_override(motion_state)
+        
+        return motion_state
+    
+    def set_teleop_targets(self, dof_pos: torch.Tensor, upper_body_only: bool = True):
+        """Set external teleop targets to override motion library.
+        
+        Args:
+            dof_pos: Target joint positions tensor of shape (num_envs, num_joints)
+                     or (num_joints,) which will be broadcast to all envs.
+            upper_body_only: If True, only override upper body joints (arms).
+                            Lower body will still use motion library.
+        """
+        if dof_pos.dim() == 1:
+            dof_pos = dof_pos.unsqueeze(0).expand(self.num_envs, -1)
+        
+        self._teleop_targets = {
+            "dof_pos": dof_pos.to(self.device),
+        }
+        self._teleop_upper_body_only = upper_body_only
+    
+    def clear_teleop_targets(self):
+        """Clear teleop targets, reverting to motion library."""
+        self._teleop_targets = None
+    
+    def _apply_teleop_override(self, motion_state: dict) -> dict:
+        """Apply teleop target override to motion state.
+        
+        For upper_body_only mode, blends teleop targets for arm joints
+        with motion library targets for lower body.
+        
+        Note: teleop_dof comes in MuJoCo order (29 DOFs) and must be remapped
+        to Isaac Lab order before merging with motion_state (already in IL order).
+        """
+        if self._teleop_targets is None:
+            return motion_state
+        
+        # Teleop data is in MuJoCo order - remap to Isaac Lab order
+        teleop_dof_mujoco = self._teleop_targets["dof_pos"]
+        teleop_dof = self._remap_mujoco_to_isaaclab(teleop_dof_mujoco)
+        
+        motion_dof = motion_state["dof_pos"]  # Already in Isaac Lab order
+        
+        if self._teleop_upper_body_only:
+            # Use Isaac Lab upper body indices (computed in _init_upper_body_indices)
+            merged_dof = motion_dof.clone()
             
-            padded_vel = torch.zeros(self.num_envs, num_joints, device=self.device)
-            padded_vel[:, :motion_dof_count] = motion_state["dof_vel"]
-            motion_state["dof_vel"] = padded_vel
+            # Override only upper body joints with teleop values
+            for il_idx in self._upper_body_indices:
+                if il_idx < teleop_dof.shape[1] and il_idx < merged_dof.shape[1]:
+                    merged_dof[:, il_idx] = teleop_dof[:, il_idx]
+            
+            motion_state["dof_pos"] = merged_dof
+        else:
+            # Full override - use teleop for all joints
+            motion_state["dof_pos"] = teleop_dof
         
         return motion_state

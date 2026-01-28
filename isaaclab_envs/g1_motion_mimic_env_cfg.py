@@ -303,9 +303,55 @@ class G1MotionMimicEnvCfg(G1FlatEnvCfg):
         self.events.add_base_mass = None
 
 
+##############################################################################
+# STAGE 2: WALKING AND MOVEMENT
+##############################################################################
+
+@configclass
+class G1MotionMimicEnvCfg_STAGE2(G1MotionMimicEnvCfg):
+    """Stage 2: Walking and movement training.
+    
+    Builds on Stage 1 standing with emphasis on locomotion and root tracking.
+    Uses walking motion data to train stable gait.
+    
+    Key differences from Stage 1:
+    - Higher weight on root XY position tracking (for locomotion)
+    - Increased feet air time reward (for walking gait)
+    - Longer episodes for walking sequences
+    
+    Curriculum Order:
+        Stage 1 (stand)  -> Stage 2 (move)  -> Stage 3 (upper)  -> Stage 4 (robust_upper)
+        5000 iters          5000 iters         10000 iters          5000 iters
+    
+    Usage:
+        python scripts/train_isaaclab.py --stage2 --checkpoint logs/.../model_5000.pt
+    """
+    
+    def __post_init__(self):
+        super().__post_init__()
+        
+        # Episode settings for walking
+        self.episode_length_s = 12.0  # Longer episodes for walking sequences
+        
+        # Increase root XY tracking for locomotion
+        self.rewards.tracking_root_pos_xy.weight = 3.0  # Higher than Stage 1
+        
+        # Increase feet air time for walking gait
+        self.rewards.feet_air_time.weight = 1.0  # Higher than Stage 1
+        
+        # Disable push disturbances during Stage 2
+        self.events.push_robot = None
+
+
+##############################################################################
+# LEGACY ROBUSTNESS CONFIGS (deprecated - use STAGE4 instead)
+##############################################################################
+
 @configclass
 class G1MotionMimicEnvCfg_ROBUST(G1MotionMimicEnvCfg):
-    """Stage 2: Robustness training with push disturbances (EASY level).
+    """DEPRECATED: Use G1MotionMimicEnvCfg_STAGE3_ROBUST for robust training.
+    
+    Legacy Stage 2: Robustness training with push disturbances (EASY level).
     
     Use this config after the robot has learned basic motion skills.
     Enables random push disturbances to improve stability.
@@ -508,6 +554,39 @@ class G1MotionMimicEnvCfg_STAGE3(G1MotionMimicEnvCfg):
         # Disable push disturbances during Stage 3
         # (re-enable for Stage 4 robust manipulation if needed)
         self.events.push_robot = None
+
+
+@configclass
+class G1MotionMimicEnvCfg_STAGE3_ROBUST(G1MotionMimicEnvCfg_STAGE3):
+    """Stage 4: Robust upper body - combines upper body tracking with push disturbances.
+    
+    Inherits from STAGE3 to get upper body tracking rewards,
+    and adds push disturbances to train robustness.
+    
+    This is used after the robot has learned upper body control in a stable
+    environment, to improve robustness under perturbations.
+    """
+    
+    def __post_init__(self):
+        super().__post_init__()
+        
+        # Re-enable push disturbances (STAGE3 disables them)
+        from isaaclab.managers import EventTermCfg
+        from isaaclab.envs.mdp import events as mdp_events
+        
+        self.events.push_robot = EventTermCfg(
+            func=mdp_events.push_by_setting_velocity,
+            mode="interval",
+            interval_range_s=(12.0, 20.0),  # EASY: push every 12-20 seconds (less frequent)
+            params={
+                "velocity_range": {
+                    "x": (-0.3, 0.3),  # EASY: very gentle pushes (reduced from 0.5)
+                    "y": (-0.3, 0.3),
+                }
+            },
+        )
+        
+        print("[Env] STAGE3_ROBUST: Upper body tracking + gentle push disturbances enabled")
 
 
 @configclass

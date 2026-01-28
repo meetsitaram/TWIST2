@@ -131,6 +131,10 @@ parser.add_argument("--robust_hard", action="store_true",
 parser.add_argument("--stage3", action="store_true",
                     help="Stage 3: Upper body manipulation with EE tracking (use with --checkpoint)")
 
+# Fine-tuning mode (lower learning rate for stability)
+parser.add_argument("--finetune", action="store_true",
+                    help="Use lower learning rate (1e-4) for fine-tuning/resuming training")
+
 # AppLauncher args (adds --headless, --video, etc.)
 AppLauncher.add_app_launcher_args(parser)
 
@@ -159,7 +163,7 @@ from isaaclab_envs.g1_motion_mimic_env_cfg import (
     G1MotionMimicEnvCfg_ROBUST,
     G1MotionMimicEnvCfg_STAGE3,
 )
-from isaaclab_envs.agents.rsl_rl_ppo_cfg import G1MotionMimicPPORunnerCfg
+from isaaclab_envs.agents.rsl_rl_ppo_cfg import G1MotionMimicPPORunnerCfg, G1MotionMimicPPORunnerCfg_FineTune
 
 # RSL-RL imports
 from rsl_rl.runners import OnPolicyRunner
@@ -204,7 +208,11 @@ def main():
         env = RslRlVecEnvWrapper(env)
         
         # Create PPO runner config
-        agent_cfg = G1MotionMimicPPORunnerCfg()
+        if args.finetune:
+            print("[Train] Using FINE-TUNE config (LR=1e-4, fixed schedule)")
+            agent_cfg = G1MotionMimicPPORunnerCfg_FineTune()
+        else:
+            agent_cfg = G1MotionMimicPPORunnerCfg()
         agent_cfg.max_iterations = args.max_iterations
         agent_cfg.experiment_name = args.run_name
         agent_cfg.logger = args.logger

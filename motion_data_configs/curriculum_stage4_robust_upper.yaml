@@ -1,0 +1,31 @@
+motions:
+- file: datasets/teleop_motions/stage3_upper_body/both-hands-2.pkl
+  weight: 1.0
+- file: datasets/teleop_motions/stage3_upper_body/both-hands.pkl
+  weight: 1.0
+- file: datasets/teleop_motions/stage3_upper_body/cut.pkl
+  weight: 1.0
+- file: datasets/teleop_motions/stage3_upper_body/left-hand.pkl
+  weight: 1.0
+- file: datasets/teleop_motions/stage3_upper_body/micro.pkl
+  weight: 1.0
+- file: datasets/teleop_motions/stage3_upper_body/open-doors.pkl
+  weight: 1.0
+- file: datasets/teleop_motions/stage3_upper_body/pick-place-2.pkl
+  weight: 1.0
+- file: datasets/teleop_motions/stage3_upper_body/pick-place-3.pkl
+  weight: 1.0
+- file: datasets/teleop_motions/stage3_upper_body/pick-place-both-hands.pkl
+  weight: 1.0
+- file: datasets/teleop_motions/stage3_upper_body/pick-place.pkl
+  weight: 1.0
+- file: datasets/teleop_motions/stage3_upper_body/right-hand.pkl
+  weight: 1.0
+- file: datasets/teleop_motions/stage3_upper_body/too-fast.pkl
+  weight: 1.0
+- file: datasets/teleop_motions/stage3_upper_body/wave.pkl
+  weight: 1.0
+- file: datasets/teleop_motions/stage3_upper_body/wipe.pkl
+  weight: 1.0
+name: stage4_robust_upper
+root_path: ..

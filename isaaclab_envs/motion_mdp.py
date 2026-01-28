@@ -91,6 +91,17 @@ def target_root_rot(env: ManagerBasedRLEnv) -> torch.Tensor:
 # REWARD FUNCTIONS
 ##############################################################################
 
+def _safe_reward(reward: torch.Tensor) -> torch.Tensor:
+    """Clamp reward to valid range and replace NaN/Inf with 0.
+    
+    This prevents numerical instability from crashing training.
+    """
+    # Replace NaN/Inf with 0
+    reward = torch.where(torch.isfinite(reward), reward, torch.zeros_like(reward))
+    # Clamp to reasonable range
+    return torch.clamp(reward, min=-100.0, max=100.0)
+
+
 def tracking_joint_dof(
     env: ManagerBasedRLEnv,
     std: float = 0.5,
@@ -121,7 +132,8 @@ def tracking_joint_dof(
     # Compute MEAN squared error (normalized by number of joints)
     dof_error = torch.mean(torch.square(current_dof - target_dof), dim=1)
     
-    return torch.exp(-dof_error / (std ** 2))
+    reward = torch.exp(-dof_error / (std ** 2))
+    return _safe_reward(reward)
 
 
 def tracking_joint_vel(
@@ -152,7 +164,8 @@ def tracking_joint_vel(
     # Compute MEAN squared error (normalized by number of joints)
     vel_error = torch.mean(torch.square(current_vel - target_vel), dim=1)
     
-    return torch.exp(-vel_error / (std ** 2))
+    reward = torch.exp(-vel_error / (std ** 2))
+    return _safe_reward(reward)
 
 
 def tracking_keybody_pos(
@@ -214,7 +227,8 @@ def tracking_keybody_pos(
     # Compute MEAN position error (normalized by number of key bodies)
     pos_error = torch.mean(torch.norm(current_pos - target_pos, dim=-1), dim=1)
     
-    return torch.exp(-pos_error / std)
+    reward = torch.exp(-pos_error / std)
+    return _safe_reward(reward)
 
 
 def tracking_root_pos_xy(
@@ -244,7 +258,8 @@ def tracking_root_pos_xy(
     
     xy_error = torch.norm(current_xy - target_xy, dim=1)
     
-    return torch.exp(-xy_error / std)
+    reward = torch.exp(-xy_error / std)
+    return _safe_reward(reward)
 
 
 def tracking_root_height(
@@ -272,7 +287,8 @@ def tracking_root_height(
     
     height_error = torch.square(current_height - target_height)
     
-    return torch.exp(-height_error / (std ** 2))
+    reward = torch.exp(-height_error / (std ** 2))
+    return _safe_reward(reward)
 
 
 def tracking_root_orientation(
@@ -304,7 +320,8 @@ def tracking_root_orientation(
     dot_product = torch.sum(current_rot * target_rot, dim=1)
     rot_error = 1.0 - torch.abs(dot_product)
     
-    return torch.exp(-rot_error / std)
+    reward = torch.exp(-rot_error / std)
+    return _safe_reward(reward)
 
 
 def feet_distance_penalty(
@@ -356,17 +373,9 @@ def feet_distance_penalty(
 # STAGE 3: ARM JOINT TRACKING REWARDS
 ##############################################################################
 
-# G1 motion data joint indices (MuJoCo format, 0-indexed):
-# Left leg: 0-5 (hip_pitch, hip_roll, hip_yaw, knee, ankle_pitch, ankle_roll)
-# Right leg: 6-11
-# Waist/torso: 12-14 (waist_yaw, waist_roll, waist_pitch)
-# Left arm: 15-21 (shoulder_pitch, shoulder_roll, shoulder_yaw, elbow, wrist_roll, wrist_pitch, wrist_yaw)
-# Right arm: 22-28
-#
-# For arm tracking, use indices 15-21 (left) and 22-28 (right)
-G1_ARM_JOINT_INDICES = list(range(15, 22)) + list(range(22, 29))  # All arm joints
-G1_LEFT_ARM_INDICES = list(range(15, 22))   # Left arm only
-G1_RIGHT_ARM_INDICES = list(range(22, 29))  # Right arm only
+# Note: Motion data is now remapped to Isaac Lab order in get_target_state()
+# so both target_dof and robot.data.joint_pos are in the same order.
+# We use env._upper_body_indices which are computed at runtime for Isaac Lab.
 
 
 def tracking_arm_joints(
@@ -375,8 +384,11 @@ def tracking_arm_joints(
 ) -> torch.Tensor:
     """Reward for tracking arm joint angles specifically.
     
-    Focuses on upper body arm joints (shoulders, elbows, wrists) for
-    manipulation tasks. Uses tighter precision than full body tracking.
+    Focuses on upper body arm joints (shoulders, elbows) for manipulation tasks.
+    Uses tighter precision than full body tracking.
+    
+    Note: target_dof is now in Isaac Lab order (remapped in get_target_state),
+    so we can directly compare with robot.data.joint_pos using Isaac Lab indices.
     
     Args:
         env: The environment instance.
@@ -390,14 +402,20 @@ def tracking_arm_joints(
         return torch.zeros(env.num_envs, device=env.device)
     
     target_state = get_target_state(env)
-    target_dof = target_state["dof_pos"]
+    target_dof = target_state["dof_pos"]  # Now in Isaac Lab order
     
     robot = env.scene["robot"]
-    current_dof = robot.data.joint_pos
+    current_dof = robot.data.joint_pos  # Isaac Lab order
     
-    # Get arm joint indices (clamp to available joints)
-    num_joints = min(current_dof.shape[1], target_dof.shape[1])
-    arm_indices = [i for i in G1_ARM_JOINT_INDICES if i < num_joints]
+    # Use Isaac Lab upper body indices from env (computed at init time)
+    if hasattr(env, '_upper_body_indices') and env._upper_body_indices:
+        arm_indices = env._upper_body_indices
+    else:
+        # Fallback: find arm joints by name pattern
+        arm_indices = []
+        for idx, name in enumerate(robot.joint_names):
+            if any(p in name for p in ["shoulder", "elbow"]):
+                arm_indices.append(idx)
     
     if not arm_indices:
         return torch.zeros(env.num_envs, device=env.device)
@@ -409,7 +427,8 @@ def tracking_arm_joints(
     # Compute MEAN squared error for arm joints
     arm_error = torch.mean(torch.square(current_arm - target_arm), dim=1)
     
-    return torch.exp(-arm_error / (std ** 2))
+    reward = torch.exp(-arm_error / (std ** 2))
+    return _safe_reward(reward)
 
 
 ##############################################################################
@@ -495,7 +514,8 @@ def tracking_ee_pos_windowed(
         else:
             best_error = torch.minimum(best_error, error)
     
-    return torch.exp(-best_error / std)
+    reward = torch.exp(-best_error / std)
+    return _safe_reward(reward)
 
 
 def tracking_ee_pos_direct(
@@ -553,7 +573,8 @@ def tracking_ee_pos_direct(
     # Compute position error
     pos_error = torch.norm(current_compare - target_ee_pos, dim=-1).mean(dim=1)
     
-    return torch.exp(-pos_error / std)
+    reward = torch.exp(-pos_error / std)
+    return _safe_reward(reward)
 
 
 def ee_velocity_direction(
@@ -630,7 +651,8 @@ def ee_velocity_direction(
     )
     
     # Average across end-effectors, map from [-1,1] to [0,1]
-    return (cos_sim.mean(dim=1) + 1.0) / 2.0
+    reward = (cos_sim.mean(dim=1) + 1.0) / 2.0
+    return _safe_reward(reward)
 
 
 def upper_body_stability(
@@ -659,7 +681,8 @@ def upper_body_stability(
     ang_vel_mag = torch.norm(torso_ang_vel, dim=1)
     
     # Exponential reward: 1 when stable, 0 when rotating fast
-    return torch.exp(-ang_vel_mag / 0.5)
+    reward = torch.exp(-ang_vel_mag / 0.5)
+    return _safe_reward(reward)
 
 
 ##############################################################################

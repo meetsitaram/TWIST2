@@ -4,23 +4,27 @@ Curriculum Training Script
 
 Multi-stage training pipeline for G1 motion imitation:
 
-Stage 1: Baby Steps (stand without falling, XY fixed)
-Stage 2: Baby Steps + Big Steps (movement enabled, XY free)
-Stage 3: Add Push Balance (robust with external forces)
-Stage 4: Upper Body (joint tracking for manipulation)
+Stage 1: Baby Steps (stand without falling, basic balance)
+Stage 2: Baby Steps + Big Steps (walking and movement)
+Stage 3: Upper Body (arm control in stable environment)
+Stage 4: Robust Upper Body (push forces + upper body motions)
+
+This curriculum order trains upper body control FIRST in a stable environment,
+then adds robustness training with push disturbances so the robot learns to
+maintain arm control under perturbations.
 
 Usage:
-    # Quick test run (500 iterations per stage, ~15 min each)
-    python scripts/train_curriculum.py --test
+    # Quick test run (100 iterations per stage)
+    python scripts/train_curriculum.py --iterations 100
     
     # Full training run
     python scripts/train_curriculum.py --full
     
     # Resume from a specific stage
-    python scripts/train_curriculum.py --start_stage 2 --checkpoint logs/curriculum/stage1/model_500.pt
+    python scripts/train_curriculum.py --start_stage 3 --checkpoint logs/curriculum/.../model.pt
     
-    # Custom iterations per stage
-    python scripts/train_curriculum.py --iterations 1000 2000 3000 5000
+    # Custom iterations per stage (4 values)
+    python scripts/train_curriculum.py --iterations 5000 5000 10000 5000
 """
 
 import argparse
@@ -207,10 +211,11 @@ def main():
     args = parser.parse_args()
     
     # Determine iterations per stage
+    # Stage 1: stand, Stage 2: move, Stage 3: upper body, Stage 4: robust upper
     if args.test:
         iterations = [500, 500, 500, 500]  # ~15 min each
     elif args.full:
-        iterations = [10000, 15000, 20000, 10000]  # Full training
+        iterations = [5000, 5000, 10000, 5000]  # Full training (upper body needs more)
     elif args.iterations:
         if len(args.iterations) == 1:
             iterations = [args.iterations[0]] * 4
@@ -237,32 +242,40 @@ def main():
     
     print(f"\nOutput directory: {run_dir}\n")
     
-    # Stage definitions
+    # Stage definitions (5-stage curriculum)
+    # 1. Standing - basic balance
+    # 2. Walking - movement
+    # 3. Upper body - arm control in stable environment
+    # 4. Robust upper body - push forces + upper body motions
     stages = [
         {
             'name': 'stage1_stand',
             'motion_dirs': ['baby_steps'],
             'robust': False,
             'stage3': False,
+            'description': 'Basic standing balance',
         },
         {
             'name': 'stage2_move',
             'motion_dirs': ['baby_steps', 'big_steps'],
             'robust': False,
             'stage3': False,
+            'description': 'Walking and movement',
         },
         {
-            'name': 'stage3_robust',
-            'motion_dirs': ['baby_steps', 'big_steps', 'push_balance'],
-            'robust': True,
-            'robust_level': None,  # easy
-            'stage3': False,
-        },
-        {
-            'name': 'stage4_upper',
+            'name': 'stage3_upper',
             'motion_dirs': ['stage3_upper_body'],
             'robust': False,
-            'stage3': True,
+            'stage3': True,  # Use upper body tracking rewards
+            'description': 'Upper body control (stable environment)',
+        },
+        {
+            'name': 'stage4_robust_upper',
+            'motion_dirs': ['stage3_upper_body'],
+            'robust': True,
+            'robust_level': None,  # easy pushes
+            'stage3': True,  # Keep upper body tracking rewards
+            'description': 'Robust upper body (with push forces)',
         },
     ]
     
