@@ -47,6 +47,39 @@ class G1RobotConfig:
     """
     
     # =========================================================================
+    # SIMULATION CONFIGURATION
+    # =========================================================================
+    
+    # Initial robot height
+    # With hip_pitch=0 (neutral stance), robot is taller than MuJoCo keyframe
+    # Adjusted to have feet touch ground without sinking
+    INIT_HEIGHT = 0.82  # meters
+    
+    # Control parameters (from Isaac Lab velocity_env_cfg)
+    ACTION_SCALE = 0.5  # action = delta_pos, target = default + action * scale
+    CONTROL_DT = 0.02   # 50Hz control frequency
+    
+    # Observation scaling - Isaac Lab uses RAW values (no scaling)
+    # This differs from legged_gym which used:
+    #   ang_vel_scale = 0.25, dof_vel_scale = 0.05
+    # In Isaac Lab, observations have noise added but no scaling factors
+    OBS_SCALES = {
+        "lin_vel": 1.0,      # No scaling
+        "ang_vel": 1.0,      # No scaling (legged_gym used 0.25)
+        "joint_pos": 1.0,    # No scaling
+        "joint_vel": 1.0,    # No scaling (legged_gym used 0.05)
+    }
+    
+    # Key bodies for observation (from isaaclab_envs/g1_motion_mimic_env_cfg.py)
+    # These are used for target_keybody_pos observation (7 bodies × 3 = 21 dims)
+    KEY_BODIES = [
+        "left_ankle_roll_link", "right_ankle_roll_link",  # Feet
+        "left_elbow_pitch_link", "right_elbow_pitch_link",  # Elbows
+        "left_shoulder_pitch_link", "right_shoulder_pitch_link",  # Shoulders
+        "torso_link",  # Torso
+    ]
+    
+    # =========================================================================
     # MUJOCO JOINT CONFIGURATION (29 DOFs)
     # =========================================================================
     
@@ -189,20 +222,26 @@ class G1RobotConfig:
     # =========================================================================
     
     # Default positions for Isaac Lab (used as action reference)
+    # These define the "zero action" pose that actions are relative to
+    # Legs: neutral upright stance (hip_pitch=0 for feet under body)
+    # Arms: from MuJoCo keyframe (elbows bent, hands forward)
     ISAACLAB_DEFAULT_POSITIONS = {
-        "left_hip_pitch_joint": 0.0,
+        # Legs - neutral upright stance
+        "left_hip_pitch_joint": 0.0,   # Neutral (not leaning forward)
         "left_hip_roll_joint": 0.0,
         "left_hip_yaw_joint": 0.0,
         "left_knee_joint": 0.4,
         "left_ankle_pitch_joint": -0.2,
         "left_ankle_roll_joint": 0.0,
-        "right_hip_pitch_joint": 0.0,
+        "right_hip_pitch_joint": 0.0,  # Neutral (not leaning forward)
         "right_hip_roll_joint": 0.0,
         "right_hip_yaw_joint": 0.0,
         "right_knee_joint": 0.4,
         "right_ankle_pitch_joint": -0.2,
         "right_ankle_roll_joint": 0.0,
+        # Waist
         "torso_joint": 0.0,
+        # Arms - relaxed position
         "left_shoulder_pitch_joint": 0.35,
         "left_shoulder_roll_joint": 0.16,
         "left_shoulder_yaw_joint": 0.0,

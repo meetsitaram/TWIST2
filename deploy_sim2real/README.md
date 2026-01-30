@@ -1,18 +1,50 @@
 # G1 Whole-Body Teleop Policy - Sim2Real Deployment
 
-This package contains everything needed to deploy the trained policy to a real Unitree G1 robot.
+This package contains everything needed to deploy a trained TWIST2 policy to a Unitree G1 robot.
+
+## Installation
+
+```bash
+# Create conda environment
+conda create -n deploy_sim2real python=3.10 -y
+conda activate deploy_sim2real
+
+# Install dependencies
+pip install -r requirements.txt
+```
 
 ## Quick Start
 
 ```bash
-# 1. Export model to ONNX
-python export_onnx.py --checkpoint ../logs/curriculum/run_XXXXXX/stage4_robust_all/model_XXXX.pt
+# 1. Analyze a checkpoint
+python get_policy_info.py --checkpoint policy_stage4_82000.pt
 
-# 2. Test sim2sim in MuJoCo
-python sim2sim_mujoco.py --model policy.onnx
+# 2. Export model to ONNX (if you have a .pt checkpoint)
+python export_onnx.py --checkpoint policy_stage4_82000.pt --output policy.onnx
 
-# 3. Run on real robot (integrate with your robot wrapper)
-python inference_example.py --model policy.onnx
+# 3. Test sim2sim in MuJoCo (uses included G1 model and meshes)
+python sim2sim_mujoco.py --model policy_stage4_82000.onnx --duration 10
+
+# 4. Run inference example
+python inference_example.py --model policy_stage4_82000.onnx
+```
+
+## Directory Structure
+
+```
+deploy_sim2real/
+├── assets/
+│   └── g1/
+│       ├── g1_sim2sim_29dof.xml    # MuJoCo model
+│       └── meshes/                  # Robot mesh files (STL)
+├── export_onnx.py                   # Export PyTorch → ONNX
+├── get_policy_info.py               # Analyze checkpoint
+├── inference_example.py             # Minimal inference example
+├── sim2sim_mujoco.py                # Test policy in MuJoCo
+├── g1_robot_config.py               # Joint mapping utilities
+├── requirements.txt                 # Python dependencies
+├── policy_stage4_82000.pt           # Example PyTorch checkpoint
+└── policy_stage4_82000.onnx         # Example ONNX model
 ```
 
 ## Model Architecture
