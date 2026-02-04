@@ -640,6 +640,32 @@ def main():
             
             step += 1
             
+            # Debug: Print arm joint observations and actions (first 5 steps, then every 100)
+            if step <= 5 or step % 100 == 0:
+                base_env = env.unwrapped
+                # Get observation from env (before noise)
+                obs_tensor = obs["policy"] if isinstance(obs, dict) else obs
+                obs_np = obs_tensor[0].cpu().numpy() if hasattr(obs_tensor, 'cpu') else obs_tensor[0]
+                
+                # Arm joint indices in Isaac Lab order
+                arm_il = [(10, 'L_sh_pitch'), (11, 'L_sh_roll'), (12, 'L_sh_yaw'), (2, 'L_elbow'),
+                          (25, 'R_sh_pitch'), (26, 'R_sh_roll'), (27, 'R_sh_yaw'), (17, 'R_elbow')]
+                
+                print(f"\n--- Step {step} ARM DEBUG (Isaac Lab) ---")
+                print(f"{'Joint':<12} | {'Target':>8} | {'Current':>8} | {'Action':>8}")
+                print("-" * 50)
+                
+                for il_idx, name in arm_il:
+                    # Target from obs[120:157]
+                    target = obs_np[120 + il_idx] if len(obs_np) > 120 + il_idx else 0
+                    # Current from obs[9:46] (relative) + default
+                    default_pos = robot.data.default_joint_pos[0, il_idx].item()
+                    current = obs_np[9 + il_idx] + default_pos if len(obs_np) > 9 + il_idx else 0
+                    # Action
+                    act = policy_actions[0, il_idx].item() if policy_actions.shape[1] > il_idx else 0
+                    print(f"{name:<12} | {target:>8.4f} | {current:>8.4f} | {act:>8.4f}")
+                print("-" * 50)
+            
             # Print status periodically
             if step % 50 == 0:
                 mean_reward = rewards.mean().item()

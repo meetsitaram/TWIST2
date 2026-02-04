@@ -1,14 +1,17 @@
-# Requirements for deploy_sim2real environment
+# Requirements for deploy_sim2real / sim2sim environment
 # 
 # Setup:
-#   conda create -n deploy_sim2real python=3.10 -y
-#   conda activate deploy_sim2real
+#   conda create -n sim2sim python=3.10 -y
+#   conda activate sim2sim
 #   pip install -r requirements.txt
 #
 # Purpose: Load trained TWIST2 policies and test in simulation before real robot deployment
 
-# Core ML
+# PyTorch CPU-only (smaller download, sufficient for inference)
+--extra-index-url https://download.pytorch.org/whl/cpu
 torch>=2.0.0
+
+# Core
 numpy>=1.24.0
 
 # ONNX export and inference

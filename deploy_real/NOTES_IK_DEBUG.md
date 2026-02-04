@@ -1832,3 +1832,19 @@ left_elbow_joint              -0.085      0.194     -0.279       16.0 **
 2. Verify action scaling by printing intermediate values
 3. Consider removing action scale (set to 1.0) for direct override
 4. Resume curriculum training after fixes
+
+---
+
+## Reference Commands
+
+### Play Isaac Lab Teleop with Trained Policy
+```bash
+python scripts/play_isaaclab_teleop.py \
+    --checkpoint logs/curriculum/run_20260129_084910/stage4_robust_all/model_100000.pt \
+    --env_motion_file motion_data_configs/upper_body_teleop.yaml \
+    --teleop pkl \
+    --motion_file datasets/teleop_motions/stage3_upper_body/wave.pkl \
+    --free_camera \
+    --motion_loop \
+    --num_envs 100
+```
