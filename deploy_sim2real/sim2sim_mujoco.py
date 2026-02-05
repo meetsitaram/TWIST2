@@ -159,34 +159,36 @@ ISAACLAB_TO_MUJOCO = {v: k for k, v in MUJOCO_TO_ISAACLAB.items()}
 #   0: left_ankle_pitch, 1: left_ankle_roll, 2: left_elbow_pitch, 3: left_elbow_roll,
 #   4: left_five (hand), 5: left_hip_pitch, 6: left_hip_roll, 7: left_hip_yaw,
 #   8: left_knee, 9: left_one (hand), 10: left_shoulder_pitch, etc.
+#
+# VALUES FROM G1_CFG.init_state in isaaclab_assets/robots/unitree.py (2024-02-04)
 ISAACLAB_DEFAULT_POS = np.zeros(37, dtype=np.float32)
-# Left leg
-ISAACLAB_DEFAULT_POS[0] = -0.2   # left_ankle_pitch
+# Left leg - from G1_CFG.init_state
+ISAACLAB_DEFAULT_POS[0] = -0.23  # left_ankle_pitch (G1_CFG uses -0.23)
 ISAACLAB_DEFAULT_POS[1] = 0.0    # left_ankle_roll
-ISAACLAB_DEFAULT_POS[5] = 0.0    # left_hip_pitch (neutral)
+ISAACLAB_DEFAULT_POS[5] = -0.20  # left_hip_pitch (G1_CFG uses -0.20)
 ISAACLAB_DEFAULT_POS[6] = 0.0    # left_hip_roll
 ISAACLAB_DEFAULT_POS[7] = 0.0    # left_hip_yaw
-ISAACLAB_DEFAULT_POS[8] = 0.4    # left_knee
-# Right leg
-ISAACLAB_DEFAULT_POS[15] = -0.2  # right_ankle_pitch
+ISAACLAB_DEFAULT_POS[8] = 0.42   # left_knee (G1_CFG uses 0.42)
+# Right leg - from G1_CFG.init_state
+ISAACLAB_DEFAULT_POS[15] = -0.23 # right_ankle_pitch (G1_CFG uses -0.23)
 ISAACLAB_DEFAULT_POS[16] = 0.0   # right_ankle_roll
-ISAACLAB_DEFAULT_POS[20] = 0.0   # right_hip_pitch (neutral)
+ISAACLAB_DEFAULT_POS[20] = -0.20 # right_hip_pitch (G1_CFG uses -0.20)
 ISAACLAB_DEFAULT_POS[21] = 0.0   # right_hip_roll
 ISAACLAB_DEFAULT_POS[22] = 0.0   # right_hip_yaw
-ISAACLAB_DEFAULT_POS[23] = 0.4   # right_knee
+ISAACLAB_DEFAULT_POS[23] = 0.42  # right_knee (G1_CFG uses 0.42)
 # Torso
 ISAACLAB_DEFAULT_POS[30] = 0.0   # torso_joint
-# Left arm
+# Left arm - from G1_CFG.init_state
 ISAACLAB_DEFAULT_POS[10] = 0.35  # left_shoulder_pitch
 ISAACLAB_DEFAULT_POS[11] = 0.16  # left_shoulder_roll
 ISAACLAB_DEFAULT_POS[12] = 0.0   # left_shoulder_yaw
-ISAACLAB_DEFAULT_POS[2] = 0.52   # left_elbow_pitch
+ISAACLAB_DEFAULT_POS[2] = 0.87   # left_elbow_pitch (G1_CFG uses 0.87)
 ISAACLAB_DEFAULT_POS[3] = 0.0    # left_elbow_roll
-# Right arm
+# Right arm - from G1_CFG.init_state
 ISAACLAB_DEFAULT_POS[25] = 0.35  # right_shoulder_pitch
-ISAACLAB_DEFAULT_POS[26] = 0.16  # right_shoulder_roll
+ISAACLAB_DEFAULT_POS[26] = -0.16 # right_shoulder_roll (G1_CFG uses -0.16, mirrors left)
 ISAACLAB_DEFAULT_POS[27] = 0.0   # right_shoulder_yaw
-ISAACLAB_DEFAULT_POS[17] = 0.52  # right_elbow_pitch
+ISAACLAB_DEFAULT_POS[17] = 0.87  # right_elbow_pitch (G1_CFG uses 0.87)
 ISAACLAB_DEFAULT_POS[18] = 0.0   # right_elbow_roll
 
 # MuJoCo default joint positions (29 DOF)
@@ -194,41 +196,44 @@ ISAACLAB_DEFAULT_POS[18] = 0.0   # right_elbow_roll
 #   0: left_hip_pitch, 1: left_hip_roll, 2: left_hip_yaw, 3: left_knee,
 #   4: left_ankle_pitch, 5: left_ankle_roll, 6-11: right leg, 12-14: waist,
 #   15-21: left arm, 22-28: right arm
+#
+# ALIGNED WITH ISAAC LAB G1_CFG.init_state (2024-02-04)
+# See deploy_sim2real/validate_sim2sim_isaaclab_to_mujoco.py for validation
 MUJOCO_DEFAULT_POS = np.zeros(29, dtype=np.float32)
-# Left leg
-MUJOCO_DEFAULT_POS[0] = 0.0    # left_hip_pitch
-MUJOCO_DEFAULT_POS[1] = 0.0    # left_hip_roll
-MUJOCO_DEFAULT_POS[2] = 0.0    # left_hip_yaw
-MUJOCO_DEFAULT_POS[3] = 0.4    # left_knee
-MUJOCO_DEFAULT_POS[4] = -0.2   # left_ankle_pitch
-MUJOCO_DEFAULT_POS[5] = 0.0    # left_ankle_roll
-# Right leg
-MUJOCO_DEFAULT_POS[6] = 0.0    # right_hip_pitch
-MUJOCO_DEFAULT_POS[7] = 0.0    # right_hip_roll
-MUJOCO_DEFAULT_POS[8] = 0.0    # right_hip_yaw
-MUJOCO_DEFAULT_POS[9] = 0.4    # right_knee
-MUJOCO_DEFAULT_POS[10] = -0.2  # right_ankle_pitch
-MUJOCO_DEFAULT_POS[11] = 0.0   # right_ankle_roll
-# Waist
-MUJOCO_DEFAULT_POS[12] = 0.0   # waist_yaw
-MUJOCO_DEFAULT_POS[13] = 0.0   # waist_roll
-MUJOCO_DEFAULT_POS[14] = 0.0   # waist_pitch
-# Left arm
-MUJOCO_DEFAULT_POS[15] = 0.35  # left_shoulder_pitch
-MUJOCO_DEFAULT_POS[16] = 0.16  # left_shoulder_roll
-MUJOCO_DEFAULT_POS[17] = 0.0   # left_shoulder_yaw
-MUJOCO_DEFAULT_POS[18] = 0.52  # left_elbow
-MUJOCO_DEFAULT_POS[19] = 0.0   # left_wrist_roll
-MUJOCO_DEFAULT_POS[20] = 0.0   # left_wrist_pitch
-MUJOCO_DEFAULT_POS[21] = 0.0   # left_wrist_yaw
-# Right arm
-MUJOCO_DEFAULT_POS[22] = 0.35  # right_shoulder_pitch
-MUJOCO_DEFAULT_POS[23] = 0.16  # right_shoulder_roll
-MUJOCO_DEFAULT_POS[24] = 0.0   # right_shoulder_yaw
-MUJOCO_DEFAULT_POS[25] = 0.52  # right_elbow
-MUJOCO_DEFAULT_POS[26] = 0.0   # right_wrist_roll
-MUJOCO_DEFAULT_POS[27] = 0.0   # right_wrist_pitch
-MUJOCO_DEFAULT_POS[28] = 0.0   # right_wrist_yaw
+# Left leg - ALIGNED WITH ISAAC LAB
+MUJOCO_DEFAULT_POS[0] = -0.20   # left_hip_pitch (was 0.0, IL uses -0.20)
+MUJOCO_DEFAULT_POS[1] = 0.0     # left_hip_roll
+MUJOCO_DEFAULT_POS[2] = 0.0     # left_hip_yaw
+MUJOCO_DEFAULT_POS[3] = 0.42    # left_knee (was 0.4, IL uses 0.42)
+MUJOCO_DEFAULT_POS[4] = -0.23   # left_ankle_pitch (was -0.2, IL uses -0.23)
+MUJOCO_DEFAULT_POS[5] = 0.0     # left_ankle_roll
+# Right leg - ALIGNED WITH ISAAC LAB
+MUJOCO_DEFAULT_POS[6] = -0.20   # right_hip_pitch (was 0.0, IL uses -0.20)
+MUJOCO_DEFAULT_POS[7] = 0.0     # right_hip_roll
+MUJOCO_DEFAULT_POS[8] = 0.0     # right_hip_yaw
+MUJOCO_DEFAULT_POS[9] = 0.42    # right_knee (was 0.4, IL uses 0.42)
+MUJOCO_DEFAULT_POS[10] = -0.23  # right_ankle_pitch (was -0.2, IL uses -0.23)
+MUJOCO_DEFAULT_POS[11] = 0.0    # right_ankle_roll
+# Waist (no changes - IL only has torso_joint mapped to waist_yaw)
+MUJOCO_DEFAULT_POS[12] = 0.0    # waist_yaw (maps to IL torso_joint)
+MUJOCO_DEFAULT_POS[13] = 0.0    # waist_roll (NO IL EQUIVALENT - keep at 0)
+MUJOCO_DEFAULT_POS[14] = 0.0    # waist_pitch (NO IL EQUIVALENT - keep at 0)
+# Left arm - ALIGNED WITH ISAAC LAB
+MUJOCO_DEFAULT_POS[15] = 0.35   # left_shoulder_pitch
+MUJOCO_DEFAULT_POS[16] = 0.16   # left_shoulder_roll
+MUJOCO_DEFAULT_POS[17] = 0.0    # left_shoulder_yaw
+MUJOCO_DEFAULT_POS[18] = 0.87   # left_elbow (was 0.52, IL uses 0.87)
+MUJOCO_DEFAULT_POS[19] = 0.0    # left_wrist_roll (maps to IL left_elbow_roll)
+MUJOCO_DEFAULT_POS[20] = 0.0    # left_wrist_pitch (NO IL EQUIVALENT)
+MUJOCO_DEFAULT_POS[21] = 0.0    # left_wrist_yaw (NO IL EQUIVALENT)
+# Right arm - ALIGNED WITH ISAAC LAB
+MUJOCO_DEFAULT_POS[22] = 0.35   # right_shoulder_pitch
+MUJOCO_DEFAULT_POS[23] = -0.16  # right_shoulder_roll (was 0.16, IL uses -0.16 to mirror left)
+MUJOCO_DEFAULT_POS[24] = 0.0    # right_shoulder_yaw
+MUJOCO_DEFAULT_POS[25] = 0.87   # right_elbow (was 0.52, IL uses 0.87)
+MUJOCO_DEFAULT_POS[26] = 0.0    # right_wrist_roll (maps to IL right_elbow_roll)
+MUJOCO_DEFAULT_POS[27] = 0.0    # right_wrist_pitch (NO IL EQUIVALENT)
+MUJOCO_DEFAULT_POS[28] = 0.0    # right_wrist_yaw (NO IL EQUIVALENT)
 
 
 # ============================================================================
@@ -518,6 +523,23 @@ class G1Sim2Sim:
         print(f"  Physics dt: {self.model.opt.timestep}")
         print(f"  Control dt: {self.control_dt}")
         
+        # Print locked joints configuration (matching g1_29dof_lock_waist)
+        print(f"\nLocked joints (g1_29dof_lock_waist style):")
+        locked_names = [
+            (13, "waist_roll_joint"),
+            (14, "waist_pitch_joint"),
+            (19, "left_wrist_roll_joint"),
+            (20, "left_wrist_pitch_joint"),
+            (21, "left_wrist_yaw_joint"),
+            (26, "right_wrist_roll_joint"),
+            (27, "right_wrist_pitch_joint"),
+            (28, "right_wrist_yaw_joint"),
+        ]
+        for idx, name in locked_names:
+            print(f"  MJ[{idx}] {name} -> LOCKED at 0.0")
+        print(f"\nActive arm joints: shoulder_pitch/roll/yaw + elbow (4 per arm)")
+        print(f"Active waist joint: waist_yaw only (1 joint)")
+        
         # Load motion if provided
         self.motion = None
         self.motion_time = 0.0
@@ -626,11 +648,12 @@ class G1Sim2Sim:
                 # Full body motion
                 init_dof_pos = motion_dof
             
-            # Use motion XY but ensure proper standing height (training uses ~1.0m)
+            # Use motion XY but ensure proper standing height
+            # Isaac Lab G1_CFG.init_state uses 0.74m (aligned 2024-02-04)
             init_pos = motion_state["root_pos"].copy()
-            if init_pos[2] < 0.9:
-                init_pos[2] = 1.0  # Override low height with standing height
-                print(f"  Overriding motion height {motion_state['root_pos'][2]:.2f}m -> 1.0m")
+            if init_pos[2] < 0.65:
+                init_pos[2] = 0.74  # Override low height with Isaac Lab standing height
+                print(f"  Overriding motion height {motion_state['root_pos'][2]:.2f}m -> 0.74m")
             
             self.data.qpos[0:3] = init_pos
             self.data.qpos[3:7] = root_rot_wxyz
@@ -639,9 +662,16 @@ class G1Sim2Sim:
         else:
             # Set initial pose
             # qpos: [x, y, z, qw, qx, qy, qz, joint1, joint2, ...]
-            self.data.qpos[0:3] = [0, 0, 1.0]  # Position (INIT_HEIGHT=1.0m matches training)
+            # Height 0.74m matches Isaac Lab G1_CFG.init_state (aligned 2024-02-04)
+            self.data.qpos[0:3] = [0, 0, 0.74]  # Position (matches Isaac Lab init_state)
             self.data.qpos[3:7] = [1, 0, 0, 0]   # Quaternion (w, x, y, z)
             self.data.qpos[7:7+29] = MUJOCO_DEFAULT_POS
+        
+        # CRITICAL: Force locked joints to 0.0 (g1_29dof_lock_waist style)
+        # These joints should never deviate from zero
+        locked_indices = [13, 14, 19, 20, 21, 26, 27, 28]  # waist_roll/pitch + all wrist joints
+        for idx in locked_indices:
+            self.data.qpos[7 + idx] = 0.0
         
         self.data.qvel[:] = 0
         mujoco.mj_forward(self.model, self.data)
@@ -672,6 +702,7 @@ class G1Sim2Sim:
         # Only copy shoulder and elbow joints from motion (MuJoCo indices):
         # Left arm:  15=shoulder_pitch, 16=shoulder_roll, 17=shoulder_yaw, 18=elbow
         # Right arm: 22=shoulder_pitch, 23=shoulder_roll, 24=shoulder_yaw, 25=elbow
+        # Note: wrist_roll (19, 26) is LOCKED - only 1 elbow joint per arm was trained
         arm_indices_mj = [15, 16, 17, 18, 22, 23, 24, 25]
         for idx in arm_indices_mj:
             target_mujoco[idx] = motion_mujoco[idx]
@@ -862,6 +893,20 @@ class G1Sim2Sim:
         
         return outputs[0].squeeze()
     
+    # Indices of MuJoCo joints that should be LOCKED (held at 0.0)
+    # These joints either don't exist in Isaac Lab OR weren't trained
+    # Matching g1_29dof_lock_waist configuration
+    LOCKED_MUJOCO_JOINTS = [
+        13,  # waist_roll_joint - lock (only waist_yaw is controlled)
+        14,  # waist_pitch_joint - lock (only waist_yaw is controlled)
+        19,  # left_wrist_roll_joint - lock (only 1 elbow joint trained)
+        20,  # left_wrist_pitch_joint - lock (no Isaac Lab equivalent)
+        21,  # left_wrist_yaw_joint - lock (no Isaac Lab equivalent)
+        26,  # right_wrist_roll_joint - lock (only 1 elbow joint trained)
+        27,  # right_wrist_pitch_joint - lock (no Isaac Lab equivalent)
+        28,  # right_wrist_yaw_joint - lock (no Isaac Lab equivalent)
+    ]
+    
     def apply_action(self, action, state):
         """Apply action using PD control."""
         # Clip action to [-1, 1] range (policy can output larger values)
@@ -877,20 +922,57 @@ class G1Sim2Sim:
         # Convert to MuJoCo order (29 DOF)
         target_pos_mj = isaaclab_to_mujoco_joints(target_pos_il)
         
-        # Fill in default positions for unmapped joints
-        # This ensures joints without Isaac Lab mapping use defaults
-        for i in range(29):
-            if target_pos_mj[i] == 0 and MUJOCO_DEFAULT_POS[i] != 0:
-                target_pos_mj[i] = MUJOCO_DEFAULT_POS[i]
+        # CRITICAL: Lock joints that aren't controlled by the policy
+        # Matching g1_29dof_lock_waist - only waist_yaw and 1 elbow joint per arm
+        # All other waist/wrist joints are locked at 0.0
+        for idx in self.LOCKED_MUJOCO_JOINTS:
+            target_pos_mj[idx] = 0.0  # Lock at zero position
         
         # PD control
         pos_error = target_pos_mj - state['joint_pos']
         vel = state['joint_vel']
         
-        torque = pos_error * self.kp - vel * self.kd
+        # Use MUCH higher stiffness for locked joints to keep them fixed
+        kp = self.kp.copy()
+        kd = self.kd.copy()
+        for idx in self.LOCKED_MUJOCO_JOINTS:
+            kp[idx] = 1000.0  # Extremely high stiffness to lock joint
+            kd[idx] = 100.0   # High damping to prevent oscillation
+        
+        torque = pos_error * kp - vel * kd
         torque = np.clip(torque, -self.torque_limits, self.torque_limits)
         
         self.data.ctrl[:29] = torque
+        
+        # Debug: Log joint positions every 100 steps
+        if hasattr(self, '_step_count'):
+            self._step_count += 1
+        else:
+            self._step_count = 0
+        
+        if self._step_count % 100 == 0:
+            # Check locked joints
+            locked_pos = state['joint_pos'][self.LOCKED_MUJOCO_JOINTS]
+            locked_names = ['waist_roll', 'waist_pitch', 'L_wrist_roll', 'L_wrist_pitch', 
+                           'L_wrist_yaw', 'R_wrist_roll', 'R_wrist_pitch', 'R_wrist_yaw']
+            max_dev = np.max(np.abs(locked_pos))
+            if max_dev > 0.05:
+                print(f"  LOCKED joints deviation: max={max_dev:.3f} rad")
+            
+            # Check knee joints (MuJoCo indices 3 and 9)
+            l_knee_pos = state['joint_pos'][3]
+            r_knee_pos = state['joint_pos'][9]
+            l_knee_target = target_pos_mj[3]
+            r_knee_target = target_pos_mj[9]
+            print(f"  KNEE: L_pos={l_knee_pos:.2f} L_tgt={l_knee_target:.2f} | R_pos={r_knee_pos:.2f} R_tgt={r_knee_target:.2f}")
+            
+            # Check all leg joints
+            leg_names = ['L_hip_pitch', 'L_hip_roll', 'L_hip_yaw', 'L_knee', 'L_ankle_pitch', 'L_ankle_roll',
+                        'R_hip_pitch', 'R_hip_roll', 'R_hip_yaw', 'R_knee', 'R_ankle_pitch', 'R_ankle_roll']
+            leg_pos = state['joint_pos'][:12]
+            leg_target = target_pos_mj[:12]
+            print(f"  LEG targets: {leg_target[:6].round(2)} | {leg_target[6:12].round(2)}")
+            print(f"  LEG actual:  {leg_pos[:6].round(2)} | {leg_pos[6:12].round(2)}")
     
     def check_fallen(self, state):
         """Check if robot has fallen."""
@@ -982,6 +1064,13 @@ class G1Sim2Sim:
                 
                 # Step physics
                 mujoco.mj_step(self.model, self.data)
+                
+                # FORCE locked joints to stay at 0 after physics step
+                # This is more reliable than PD control alone
+                for idx in self.LOCKED_MUJOCO_JOINTS:
+                    self.data.qpos[7 + idx] = 0.0
+                    self.data.qvel[6 + idx] = 0.0
+                
                 step_count += 1
                 
                 # Sync viewer
