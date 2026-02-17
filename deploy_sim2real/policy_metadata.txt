@@ -1,0 +1,11 @@
+Source checkpoint: policy_stage4_82000.pt
+Observation dim: 178
+Action dim: 37
+Hidden dims: [512, 256, 128]
+Activation: ELU
+ONNX opset: 14
+
+Action interpretation:
+  Actions are joint position DELTAS
+  target_pos = default_pos + (action * action_scale)
+  action_scale = 0.5
