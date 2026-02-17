@@ -1,0 +1,41 @@
+{
+  "checkpoint_path": "policy_stage4_82000.pt",
+  "obs_dim": 178,
+  "act_dim": 37,
+  "hidden_dims": [
+    512,
+    256,
+    128
+  ],
+  "action_scale": 0.5,
+  "actor_layers": {
+    "actor.0.weight": [
+      512,
+      178
+    ],
+    "actor.0.bias": [
+      512
+    ],
+    "actor.2.weight": [
+      256,
+      512
+    ],
+    "actor.2.bias": [
+      256
+    ],
+    "actor.4.weight": [
+      128,
+      256
+    ],
+    "actor.4.bias": [
+      128
+    ],
+    "actor.6.weight": [
+      37,
+      128
+    ],
+    "actor.6.bias": [
+      37
+    ]
+  }
+}

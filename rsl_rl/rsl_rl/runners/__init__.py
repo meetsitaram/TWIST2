@@ -30,5 +30,4 @@
 
 from .on_policy_runner import OnPolicyRunner
 from .on_policy_runner_mimic import OnPolicyRunnerMimic
-from .dagger_runner import DAggerRunner
-from .on_policy_dagger_runner import OnPolicyDaggerRunner
+# Removed: DAggerRunner, OnPolicyDaggerRunner (unused, had legged_gym dependency)
