@@ -2,6 +2,10 @@
 
 This package contains everything needed to deploy a trained TWIST2 policy to a Unitree G1 robot.
 
+## Demo
+
+https://github.com/meetsitaram/TWIST2/raw/isaaclab/deploy_sim2real/g1-live-teleop-trim.mp4
+
 ## Installation
 
 ```bash
@@ -17,16 +21,63 @@ pip install -r requirements.txt
 
 ```bash
 # 1. Analyze a checkpoint
-python get_policy_info.py --checkpoint policy_stage4_82000.pt
+python get_policy_info.py --checkpoint policy_stage4_121999.pt
 
 # 2. Export model to ONNX (if you have a .pt checkpoint)
-python export_onnx.py --checkpoint policy_stage4_82000.pt --output policy.onnx
+python export_onnx.py --checkpoint policy_stage4_121999.pt --output policy_stage4_121999.onnx
 
-# 3. Test sim2sim in MuJoCo (uses included G1 model and meshes)
-python sim2sim_mujoco.py --model policy_stage4_82000.onnx --duration 10
+# 3. Test sim2sim in MuJoCo with a sample motion
+python sim2sim_mujoco.py --model policy_stage4_121999.onnx --motion sample_motions/pick-place-2.pkl
 
 # 4. Run inference example
-python inference_example.py --model policy_stage4_82000.onnx
+python inference_example.py --model policy_stage4_121999.onnx
+```
+
+## Running Sample Motions
+
+Several sample motion clips are included under `sample_motions/`:
+
+| Motion file | Description |
+|---|---|
+| `open-doors.pkl` | Opening door motion |
+| `pick-place-2.pkl` | Pick and place sequence |
+| `pick-place-3.pkl` | Pick and place variant |
+| `too-fast.pkl` | Fast arm motion (stress test) |
+
+### Sim2Sim with policy + motion
+
+Run the trained policy in MuJoCo while tracking a motion file:
+
+```bash
+# Play a pick-and-place motion (loops by default)
+python sim2sim_mujoco.py --model policy_stage4_121999.onnx --motion sample_motions/pick-place-2.pkl
+
+# Play once without looping, then hold final pose
+python sim2sim_mujoco.py --model policy_stage4_121999.onnx --motion sample_motions/open-doors.pkl --no-loop
+
+# Longer run at custom duration
+python sim2sim_mujoco.py --model policy_stage4_121999.onnx --motion sample_motions/pick-place-3.pkl --duration 60
+```
+
+### Replay motion without policy (kinematic / PD control)
+
+Useful for verifying motion data is correct before running through the policy:
+
+```bash
+# Kinematic replay (directly sets joint positions, no physics)
+python replay_motion_mujoco.py --motion sample_motions/open-doors.pkl
+
+# Physics replay with PD control (no policy, just PD tracking)
+python replay_motion_mujoco.py --motion sample_motions/pick-place-2.pkl --physics
+
+# Slow-motion playback
+python replay_motion_mujoco.py --motion sample_motions/too-fast.pkl --speed 0.5
+```
+
+### List all available motions
+
+```bash
+python sim2sim_mujoco.py --list-motions
 ```
 
 ## Directory Structure
@@ -35,16 +86,23 @@ python inference_example.py --model policy_stage4_82000.onnx
 deploy_sim2real/
 ├── assets/
 │   └── g1/
-│       ├── g1_sim2sim_29dof.xml    # MuJoCo model
-│       └── meshes/                  # Robot mesh files (STL)
-├── export_onnx.py                   # Export PyTorch → ONNX
-├── get_policy_info.py               # Analyze checkpoint
-├── inference_example.py             # Minimal inference example
-├── sim2sim_mujoco.py                # Test policy in MuJoCo
-├── g1_robot_config.py               # Joint mapping utilities
-├── requirements.txt                 # Python dependencies
-├── policy_stage4_82000.pt           # Example PyTorch checkpoint
-└── policy_stage4_82000.onnx         # Example ONNX model
+│       ├── g1_sim2sim_29dof.xml         # MuJoCo model
+│       └── meshes/                       # Robot mesh files (STL)
+├── sample_motions/                       # Sample motion clips (.pkl)
+│   ├── open-doors.pkl
+│   ├── pick-place-2.pkl
+│   ├── pick-place-3.pkl
+│   └── too-fast.pkl
+├── export_onnx.py                        # Export PyTorch → ONNX
+├── get_policy_info.py                    # Analyze checkpoint
+├── inference_example.py                  # Minimal inference example
+├── sim2sim_mujoco.py                     # Test policy in MuJoCo
+├── replay_motion_mujoco.py              # Replay motion without policy
+├── g1_robot_config.py                    # Joint mapping utilities
+├── requirements.txt                      # Python dependencies
+├── policy_stage4_121999.pt              # Latest PyTorch checkpoint
+├── policy_stage4_121999.onnx            # Latest ONNX model
+└── g1-live-teleop-trim.mp4             # Live teleop demo video
 ```
 
 ## Model Architecture
@@ -245,22 +303,25 @@ DEFAULT_JOINT_POS = {
 | File | Description |
 |------|-------------|
 | `export_onnx.py` | Export PyTorch checkpoint to ONNX |
-| `sim2sim_mujoco.py` | Test policy in MuJoCo simulation |
+| `sim2sim_mujoco.py` | Test policy in MuJoCo with motion tracking |
+| `replay_motion_mujoco.py` | Replay motion without policy (kinematic or PD) |
 | `inference_example.py` | Minimal inference example |
 | `g1_robot_config.py` | Joint mapping utilities |
-| `policy.onnx` | Exported ONNX model (after running export) |
-| `policy.pt` | PyTorch checkpoint (copy latest here) |
+| `policy_stage4_121999.onnx` | Latest exported ONNX model |
+| `policy_stage4_121999.pt` | Latest PyTorch checkpoint |
+| `sample_motions/*.pkl` | Sample teleop motion clips |
 
 ## Training Details
 
 - **Algorithm**: PPO (Proximal Policy Optimization)
 - **Framework**: RSL-RL + Isaac Lab
+- **Latest checkpoint**: `policy_stage4_121999` (final iteration of curriculum run `run_20260129_084910`)
 - **Training Stages**:
   1. Stage 1: Basic balance (10k iters)
   2. Stage 2: Movement (10k iters)
   3. Stage 3: Upper body tracking (40k iters)
-  4. Stage 4: Robust with push forces (40k iters)
-- **Total**: ~100k iterations with curriculum
+  4. Stage 4: Robust with push forces (40k+ iters)
+- **Total**: ~122k iterations with curriculum
 
 ## Contact
 
