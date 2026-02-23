@@ -4,7 +4,11 @@ This package contains everything needed to deploy a trained TWIST2 policy to a U
 
 ## Demo
 
+### Live Teleop
 https://github.com/meetsitaram/TWIST2/raw/isaaclab/deploy_sim2real/g1-live-teleop-trim.mp4
+
+### Kitchen Scene (World Labs + NVIDIA Fixtures)
+https://github.com/meetsitaram/TWIST2/raw/isaaclab/deploy_sim2real/g1-in-worldlab-kitchen-with-nvidia-assets.mp4
 
 ## Installation
 
@@ -100,9 +104,11 @@ deploy_sim2real/
 ├── replay_motion_mujoco.py              # Replay motion without policy
 ├── g1_robot_config.py                    # Joint mapping utilities
 ├── requirements.txt                      # Python dependencies
+├── play_kitchen_teleop.py               # Kitchen scene teleop (Isaac Lab)
 ├── policy_stage4_121999.pt              # Latest PyTorch checkpoint
 ├── policy_stage4_121999.onnx            # Latest ONNX model
-└── g1-live-teleop-trim.mp4             # Live teleop demo video
+├── g1-live-teleop-trim.mp4             # Live teleop demo video
+└── g1-in-worldlab-kitchen-with-nvidia-assets.mp4  # Kitchen scene demo
 ```
 
 ## Model Architecture
@@ -309,6 +315,7 @@ DEFAULT_JOINT_POS = {
 | `g1_robot_config.py` | Joint mapping utilities |
 | `policy_stage4_121999.onnx` | Latest exported ONNX model |
 | `policy_stage4_121999.pt` | Latest PyTorch checkpoint |
+| `play_kitchen_teleop.py` | Run policy in World Labs kitchen (Isaac Lab) |
 | `sample_motions/*.pkl` | Sample teleop motion clips |
 
 ## Training Details
