@@ -172,6 +172,11 @@ def main():
     config = load_camera_config()
     camera_ids = args.cameras or config['camera_ids']
     
+    # Build camera ID → position label mapping from config
+    camera_labels = {}
+    for position, cam_info in config.get('cameras', {}).items():
+        camera_labels[cam_info['id']] = position.capitalize()
+    
     # Calibration path
     calibration_dir = os.path.join(os.path.dirname(SCRIPT_DIR), "calibration")
     calibration_path = args.calibration or os.path.join(calibration_dir, "calibration.toml")
@@ -215,6 +220,7 @@ def main():
         skeleton_smoothing=args.smoothing,
         smoothing_min_cutoff=min_cutoff,
         smoothing_beta=beta,
+        camera_labels=camera_labels,
     )
     
     # Create retargeter (IK-based or direct mapping)
@@ -290,11 +296,16 @@ def main():
             frames_dict, _ = streamer.get_latest_frames()
             if frames_dict:
                 CELL_W, CELL_H = 480, 270
-                sorted_cam_ids = sorted(frames_dict.keys())
+                ordered_cam_ids = streamer._ordered_cam_ids(frames_dict.keys())
                 stacked_frames = []
-                for cam_id in sorted_cam_ids[:3]:
+                for cam_id in ordered_cam_ids[:3]:
                     frame = frames_dict[cam_id]
                     resized = cv2.resize(frame, (CELL_W, CELL_H))
+                    # Add camera label
+                    label = camera_labels.get(cam_id, "")
+                    cam_text = f"Cam {cam_id} ({label})" if label else f"Cam {cam_id}"
+                    cv2.putText(resized, cam_text, (10, 25),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
                     # Add countdown overlay
                     cv2.putText(resized, str(remaining), (CELL_W//2 - 30, CELL_H//2 + 20),
                                cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 255, 255), 4)
@@ -450,12 +461,14 @@ def main():
                     frames_dict, _ = streamer.get_latest_frames()
                     if frames_dict:
                         CELL_W, CELL_H = 480, 270
-                        sorted_cam_ids = sorted(frames_dict.keys())
+                        ordered_cam_ids = streamer._ordered_cam_ids(frames_dict.keys())
                         stacked_frames = []
-                        for cam_id in sorted_cam_ids[:3]:
+                        for cam_id in ordered_cam_ids[:3]:
                             frame = frames_dict[cam_id]
                             resized = cv2.resize(frame, (CELL_W, CELL_H))
-                            cv2.putText(resized, f"Cam {cam_id}", (10, 25),
+                            label = camera_labels.get(cam_id, "")
+                            cam_text = f"Cam {cam_id} ({label})" if label else f"Cam {cam_id}"
+                            cv2.putText(resized, cam_text, (10, 25),
                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
                             stacked_frames.append(resized)
                         if stacked_frames:

@@ -544,6 +544,7 @@ class MultiCamPoseStreamer:
         # Leg-only pitch correction (rotates legs around pelvis)
         # Positive = rotate legs forward, Negative = rotate legs backward
         leg_pitch_correction_deg: float = 0.0,
+        camera_labels: Optional[Dict[int, str]] = None,
     ):
         """
         Initialize multi-camera pose streamer.
@@ -562,6 +563,7 @@ class MultiCamPoseStreamer:
             world_pitch_correction_deg: Pitch correction in degrees (positive = rotate backward)
             world_roll_correction_deg: Roll correction in degrees (positive = roll right)
             leg_pitch_correction_deg: Leg-only pitch correction (positive = forward, negative = backward)
+            camera_labels: Optional mapping of camera ID to position label (e.g. {1: "Left", 3: "Center", 5: "Right"})
         """
         if not MEDIAPIPE_AVAILABLE:
             raise ImportError("MediaPipe required. Install with: pip install mediapipe")
@@ -572,6 +574,8 @@ class MultiCamPoseStreamer:
         self.enable_display = enable_display
         self.target_fps = target_fps
         self.use_gmr = use_gmr
+        self.camera_labels = camera_labels or {}
+        self._position_order = ["Left", "Center", "Right"]
         
         # Load calibration
         self.calibrations = load_calibration(calibration_file)
@@ -663,6 +667,18 @@ class MultiCamPoseStreamer:
         self.window_name = "Multi-Camera Pose - Press 'q' to quit"
         self._window_created = False
         self._last_time_spread = 0.0  # Track frame sync quality
+    
+    def _ordered_cam_ids(self, available_ids):
+        """Return camera IDs ordered by position (Left, Center, Right), then by ID for unlabelled."""
+        label_to_id = {}
+        for cam_id, label in self.camera_labels.items():
+            label_to_id[label] = cam_id
+        ordered = [label_to_id[pos] for pos in self._position_order
+                   if pos in label_to_id and label_to_id[pos] in available_ids]
+        for cam_id in sorted(available_ids):
+            if cam_id not in ordered:
+                ordered.append(cam_id)
+        return ordered
     
     def start(self):
         """Start streaming."""
@@ -844,7 +860,7 @@ class MultiCamPoseStreamer:
         """Display visualization."""
         vis_frames = []
         
-        for cam_id in sorted(frames.keys()):
+        for cam_id in self._ordered_cam_ids(frames.keys()):
             frame = frames[cam_id].copy()
             
             if cam_id in detections:
@@ -871,7 +887,9 @@ class MultiCamPoseStreamer:
                         )
             
             # Add camera label and FPS
-            cv2.putText(frame, f"Cam {cam_id}", (10, 30),
+            label = self.camera_labels.get(cam_id, "")
+            cam_text = f"Cam {cam_id} ({label})" if label else f"Cam {cam_id}"
+            cv2.putText(frame, cam_text, (10, 30),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
             cv2.putText(frame, f"FPS: {self.current_fps:.1f}", (10, 60),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
@@ -920,15 +938,15 @@ class MultiCamPoseStreamer:
         # Layout: single column, cameras stacked vertically
         CELL_W, CELL_H = 480, 270
         
-        sorted_cam_ids = sorted(frames.keys())
-        num_cams = min(len(sorted_cam_ids), 4)
+        ordered_cam_ids = self._ordered_cam_ids(frames.keys())
+        num_cams = min(len(ordered_cam_ids), 4)
         OUTPUT_W = CELL_W
         OUTPUT_H = CELL_H * num_cams
         
         # Create fixed-size black canvas
         combined = np.zeros((OUTPUT_H, OUTPUT_W, 3), dtype=np.uint8)
         
-        for idx, cam_id in enumerate(sorted_cam_ids):
+        for idx, cam_id in enumerate(ordered_cam_ids):
             if idx >= num_cams:
                 break
                 
@@ -958,7 +976,9 @@ class MultiCamPoseStreamer:
                         )
             
             # Add camera label and FPS
-            cv2.putText(frame, f"Cam {cam_id}", (10, 30),
+            label = self.camera_labels.get(cam_id, "")
+            cam_text = f"Cam {cam_id} ({label})" if label else f"Cam {cam_id}"
+            cv2.putText(frame, cam_text, (10, 30),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
             cv2.putText(frame, f"FPS: {self.current_fps:.1f}", (10, 60),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)

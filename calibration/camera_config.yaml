@@ -1,12 +1,7 @@
 # Camera Configuration for Multi-Camera Motion Capture
-# Generated: 2026-01-21 20:11:16
+# Generated: 2026-02-26 14:00:08
 #
 # Regenerate with: python deploy_real/setup_cameras.py
-
-# Skeleton corrections (calibrated 2026-01-26)
-# leg_pitch_correction_deg: rotates legs around pelvis
-#   positive = legs forward, negative = legs backward
-leg_pitch_correction_deg: -10.0
 
 capture:
   resolution:
@@ -16,18 +11,18 @@ capture:
   codec: MJPG
 cameras:
   left:
-    id: 2
+    id: 1
     description: Left camera
   center:
-    id: 1
+    id: 5
     description: Center camera
   right:
-    id: 0
+    id: 3
     description: Right camera
 camera_ids:
-- 2
 - 1
-- 0
+- 5
+- 3
 calibration:
   board:
     squares_x: 4

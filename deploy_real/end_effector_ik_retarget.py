@@ -285,7 +285,8 @@ def align_skeleton_upright(skeleton: np.ndarray) -> np.ndarray:
     return skeleton
 
 
-def extract_human_end_effectors(skeleton_3d: np.ndarray, return_raw_pelvis: bool = False) -> dict:
+def extract_human_end_effectors(skeleton_3d: np.ndarray, return_raw_pelvis: bool = False,
+                                upper_body_only: bool = False) -> dict:
     """
     Extract 5 end-effector positions and orientations from MediaPipe skeleton.
     
@@ -307,16 +308,52 @@ def extract_human_end_effectors(skeleton_3d: np.ndarray, return_raw_pelvis: bool
             raw_pelvis = (l_hip + r_hip) / 2
     
     # Check for NaN in critical landmarks
-    critical_landmarks = [
-        MP_LEFT_WRIST, MP_RIGHT_WRIST, MP_LEFT_ANKLE, MP_RIGHT_ANKLE,
+    upper_body_landmarks = [
+        MP_LEFT_WRIST, MP_RIGHT_WRIST,
         MP_LEFT_SHOULDER, MP_RIGHT_SHOULDER, MP_LEFT_HIP, MP_RIGHT_HIP,
+        MP_LEFT_ELBOW, MP_RIGHT_ELBOW,
+    ]
+    lower_body_landmarks = [
+        MP_LEFT_ANKLE, MP_RIGHT_ANKLE,
         MP_LEFT_INDEX, MP_RIGHT_INDEX, MP_LEFT_HEEL, MP_RIGHT_HEEL,
         MP_LEFT_FOOT_INDEX, MP_RIGHT_FOOT_INDEX, MP_LEFT_PINKY, MP_RIGHT_PINKY,
-        MP_LEFT_ELBOW, MP_RIGHT_ELBOW,  # Added for elbow tracking
     ]
+    
+    critical_landmarks = upper_body_landmarks if upper_body_only else upper_body_landmarks + lower_body_landmarks
+    
     for idx in critical_landmarks:
         if idx < len(skeleton_arr) and np.any(np.isnan(skeleton_arr[idx])):
             return None
+    
+    # In upper_body_only mode, fill NaN lower-body landmarks with defaults
+    # so downstream code (alignment, height estimation) doesn't crash
+    if upper_body_only:
+        pelvis_est = (skeleton_arr[MP_LEFT_HIP] + skeleton_arr[MP_RIGHT_HIP]) / 2
+        hip_width = np.linalg.norm(skeleton_arr[MP_LEFT_HIP] - skeleton_arr[MP_RIGHT_HIP])
+        leg_len = hip_width * 4.5  # approximate leg length from hip width
+        
+        defaults = {
+            MP_LEFT_KNEE:       skeleton_arr[MP_LEFT_HIP] + np.array([0, 0, -leg_len * 0.5]),
+            MP_RIGHT_KNEE:      skeleton_arr[MP_RIGHT_HIP] + np.array([0, 0, -leg_len * 0.5]),
+            MP_LEFT_ANKLE:      skeleton_arr[MP_LEFT_HIP] + np.array([0, 0, -leg_len]),
+            MP_RIGHT_ANKLE:     skeleton_arr[MP_RIGHT_HIP] + np.array([0, 0, -leg_len]),
+            MP_LEFT_HEEL:       skeleton_arr[MP_LEFT_HIP] + np.array([0, -0.04, -leg_len]),
+            MP_RIGHT_HEEL:      skeleton_arr[MP_RIGHT_HIP] + np.array([0, -0.04, -leg_len]),
+            MP_LEFT_FOOT_INDEX: skeleton_arr[MP_LEFT_HIP] + np.array([0, 0.10, -leg_len]),
+            MP_RIGHT_FOOT_INDEX:skeleton_arr[MP_RIGHT_HIP] + np.array([0, 0.10, -leg_len]),
+        }
+        # Also fill hand detail landmarks if missing
+        hand_defaults = {
+            MP_LEFT_INDEX:  skeleton_arr[MP_LEFT_WRIST] + np.array([0, 0.05, 0]),
+            MP_RIGHT_INDEX: skeleton_arr[MP_RIGHT_WRIST] + np.array([0, 0.05, 0]),
+            MP_LEFT_PINKY:  skeleton_arr[MP_LEFT_WRIST] + np.array([0.03, 0.04, 0]),
+            MP_RIGHT_PINKY: skeleton_arr[MP_RIGHT_WRIST] + np.array([-0.03, 0.04, 0]),
+        }
+        defaults.update(hand_defaults)
+        
+        for idx, default_pos in defaults.items():
+            if idx < len(skeleton_arr) and np.any(np.isnan(skeleton_arr[idx])):
+                skeleton_arr[idx] = default_pos
     
     # Align skeleton upright first
     skeleton = align_skeleton_upright(skeleton_arr)
@@ -877,7 +914,7 @@ class EndEffectorIKRetargeter:
                 - 'iterations': number of IK iterations
         """
         # Extract human end-effectors
-        human_data = extract_human_end_effectors(skeleton_3d)
+        human_data = extract_human_end_effectors(skeleton_3d, upper_body_only=fixed_base)
         
         if human_data is None:
             if self.verbose:
