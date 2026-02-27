@@ -93,9 +93,13 @@ simulation_app = app_launcher.app
 # IMPORTS (after AppLauncher)
 ##############################################################################
 
+import math
 import torch
 import numpy as np
 import gymnasium as gym
+
+import carb.input
+import omni.appwindow
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import AssetBaseCfg
@@ -121,7 +125,162 @@ def build_joint_mapping(joint_names: list) -> dict:
 
 
 ##############################################################################
-# SCENE MATERIALS
+# SPAWN PRESETS — named locations inside the kitchen
+##############################################################################
+
+# (name, x, y, yaw_degrees)
+# Coordinates are in the kitchen world frame (origin = center of kitchen).
+# Yaw 0 = facing +X, 90 = facing +Y (toward back wall), 180 = facing -X, etc.
+SPAWN_PRESETS = {
+    1: ("fridge",      -0.69,  0.75,   90),  # in front of fridge, facing it
+    2: ("stove",        0.95,  0.20,    0),  # in front of stove, facing right toward it
+    3: ("dishwasher",  -0.80, -0.10,  180),  # facing dishwasher (pulled back)
+    4: ("microwave",    0.58,  0.75,   90),  # in front of microwave
+}
+
+# Per-preset camera positions captured from the Isaac Sim viewport.
+CAMERA_PRESETS = {
+    1: {"eye": (1.148, -0.743, 1.618), "target": (-0.284, 0.494, 0.968)},   # fridge
+    2: {"eye": (0.593, 1.069, 1.792),  "target": (1.551, -0.262, 0.648)},   # stove
+    3: {"eye": (-0.251, -1.541, 1.611), "target": (-1.182, -0.073, 0.622)}, # dishwasher
+    4: {"eye": (-0.346, -0.379, 1.805), "target": (0.788, 0.962, 0.848)},   # microwave
+}
+
+
+_kitchen_resetter = None
+
+
+class KitchenObjectResetter:
+    """Capture and restore initial state of kitchen fixtures/objects via PhysX tensor API.
+
+    Uses the same physics_sim_view that Isaac Lab uses to reset the robot,
+    so transforms and joint states are written directly into PhysX.
+    """
+
+    def __init__(self, env):
+        import sys
+        from pxr import UsdPhysics
+        self._env = env
+        sim = env.unwrapped.sim
+        psv = sim.physics_sim_view
+        stage = sim.stage
+        kitchen = "/World/envs/env_0/Kitchen"
+
+        self._rigid_body_data = {}
+
+        # Find ALL rigid bodies under the entire Kitchen hierarchy
+        # (fixture doors, loose objects, etc.) — skip the RoomShell.
+        for prim in stage.Traverse():
+            path = str(prim.GetPath())
+            if not path.startswith(kitchen):
+                continue
+            if "/RoomShell" in path:
+                continue
+            if not prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                continue
+
+            prim_name = prim.GetName()
+            # Use full path as key to avoid name collisions
+            key = path.replace(kitchen + "/", "")
+            try:
+                view = psv.create_rigid_body_view(path)
+                count = view.count
+                if count == 0:
+                    continue
+                indices = torch.arange(count, dtype=torch.int32, device="cuda:0")
+                self._rigid_body_data[key] = {
+                    "view": view,
+                    "indices": indices,
+                    "transforms": view.get_transforms().clone(),
+                    "velocities": view.get_velocities().clone(),
+                }
+            except Exception as e:
+                print(f"[Kitchen] Could not track {key}: {e}", flush=True)
+
+        print(f"\n[Kitchen] Object resetter ready — {len(self._rigid_body_data)} rigid bodies tracked:", flush=True)
+        for key in sorted(self._rigid_body_data.keys()):
+            print(f"  - {key}", flush=True)
+        sys.stdout.flush()
+
+    def reset(self):
+        """Restore all tracked rigid bodies to their initial PhysX state."""
+        for key, data in self._rigid_body_data.items():
+            try:
+                idx = data["indices"]
+                data["view"].set_transforms(data["transforms"], idx)
+                data["view"].set_velocities(data["velocities"], idx)
+            except Exception as e:
+                print(f"[Kitchen] Failed to reset {key}: {e}")
+
+
+def respawn_robot(env, robot, preset_key: int, reset_objects: bool = False):
+    """Reset the environment and place the robot at the given spawn preset."""
+    name, x, y, yaw_deg = SPAWN_PRESETS[preset_key]
+    yaw = math.radians(yaw_deg)
+    default_z = robot.data.default_root_state[0, 2].item()
+
+    pos = torch.tensor([[x, y, default_z]], device=robot.device)
+    quat = torch.tensor(
+        [[math.cos(yaw / 2), 0.0, 0.0, math.sin(yaw / 2)]],
+        device=robot.device,
+    )
+
+    obs, _ = env.reset()
+    robot.write_root_pose_to_sim(torch.cat([pos, quat], dim=-1))
+
+    if reset_objects and _kitchen_resetter is not None:
+        _kitchen_resetter.reset()
+        print("[Kitchen] Scene objects reset to defaults")
+
+    cam = CAMERA_PRESETS.get(preset_key)
+    if cam is not None:
+        env.unwrapped.sim.set_camera_view(eye=cam["eye"], target=cam["target"])
+
+    print(f"\n[Kitchen] Spawned at: {name} ({x:.2f}, {y:.2f}, yaw={yaw_deg} deg)")
+    return obs
+
+
+##############################################################################
+# KEYBOARD HANDLER — number keys 1-5 select spawn presets
+##############################################################################
+
+class SpawnKeyboardHandler:
+    """Listen for number key presses via Omniverse carb.input."""
+
+    def __init__(self):
+        self._appwindow = omni.appwindow.get_default_app_window()
+        self._input = carb.input.acquire_input_interface()
+        self._keyboard = self._appwindow.get_keyboard()
+        self._pending_spawn: int | None = None
+        self._capture_camera: bool = False
+        self._toggle_loop: bool = False
+        self._kb_sub = self._input.subscribe_to_keyboard_events(
+            self._keyboard, self._on_key
+        )
+
+    def _on_key(self, event, *args, **kwargs):
+        if event.type == carb.input.KeyboardEventType.KEY_PRESS:
+            if event.input.name == "C":
+                self._capture_camera = True
+            if event.input.name == "L":
+                self._toggle_loop = True
+            for n in range(1, len(SPAWN_PRESETS) + 1):
+                if event.input.name == f"KEY_{n}":
+                    self._pending_spawn = n
+        return True
+
+    def poll(self) -> int | None:
+        """Return pending spawn preset key (1-5) or None."""
+        val = self._pending_spawn
+        self._pending_spawn = None
+        return val
+
+    def close(self):
+        self._input.unsubscribe_to_keyboard_events(
+            self._keyboard, self._kb_sub
+        )
+
+
 ##############################################################################
 # KITCHEN SCENE CONFIG
 ##############################################################################
@@ -160,8 +319,7 @@ def apply_kitchen_scene_config(env_cfg: G1MotionMimicEnvCfg, params: dict):
     # dishwasher: (-1.3518, -0.3494, 0.3543), rotated 88.6 deg
     # microwave: (0.576, 1.4405, 0.9953)
 
-    # Robot spawn -- position in front of fridge, facing it (+Y direction)
-    import math
+    # Robot spawn -- default position in front of fridge, facing it (+Y direction)
     robot_x, robot_y = -0.69, 0.75
     yaw = math.pi / 2  # face +Y (toward fridge / back wall)
     default_z = env_cfg.scene.robot.init_state.pos[2]
@@ -188,6 +346,10 @@ def apply_kitchen_scene_config(env_cfg: G1MotionMimicEnvCfg, params: dict):
     env_cfg.viewer.eye = tuple(cam.get("eye", [2.5, 2.5, 1.0]))
     env_cfg.viewer.lookat = tuple(cam.get("target", [0.0, 0.0, -0.3]))
 
+    # Long episode for interactive demo (no auto-reset timeout).
+    # Resets only happen on keyboard spawn (1-5) or actual falls.
+    env_cfg.episode_length_s = 600.0
+
     # Constrain resets to stay near spawn point with same orientation
     env_cfg.events.reset_base.params = {
         "pose_range": {"x": (-0.1, 0.1), "y": (-0.1, 0.1), "yaw": (0.0, 0.0)},
@@ -196,6 +358,18 @@ def apply_kitchen_scene_config(env_cfg: G1MotionMimicEnvCfg, params: dict):
             "roll": (0.0, 0.0), "pitch": (0.0, 0.0), "yaw": (0.0, 0.0),
         },
     }
+
+    # Replace contact-based termination with height-based fall detection.
+    # Contact termination fires on ANY touch (fridge, counter) which is
+    # expected in a kitchen. Height check only fires on actual falls.
+    from isaaclab.managers import TerminationTermCfg as DoneTerm
+    import isaaclab.envs.mdp as base_mdp
+
+    env_cfg.terminations.base_contact = None
+    env_cfg.terminations.fallen_over = DoneTerm(
+        func=base_mdp.root_height_below_minimum,
+        params={"minimum_height": 0.65},
+    )
 
     # Disable disturbances
     env_cfg.events.base_external_force_torque = None
@@ -280,11 +454,12 @@ class RedisTeleopClient:
             )
             self.redis_client.ping()
             print(f"[RedisTeleop] Connected! Key: '{self.key}'")
-            data = self.redis_client.get(self.key)
-            if data:
-                print(f"[RedisTeleop] Found existing data ({len(data)} bytes)")
+            # Flush stale data from previous sessions
+            deleted = self.redis_client.delete(self.key, f"{self.key}:ik_error")
+            if deleted:
+                print(f"[RedisTeleop] Flushed {deleted} stale key(s) — waiting for fresh publisher data...")
             else:
-                print(f"[RedisTeleop] No data yet - waiting for publisher...")
+                print(f"[RedisTeleop] No stale data — waiting for publisher...")
         except ImportError:
             print("[RedisTeleop] ERROR: pip install redis")
             self.redis_client = None
@@ -293,15 +468,22 @@ class RedisTeleopClient:
             self.redis_client = None
 
     def get_target_dof(self) -> np.ndarray | None:
+        """Return fresh teleop DOFs, or None if no publisher is active.
+
+        Returns None (not stale data) when the Redis key is absent,
+        which happens when the publisher isn't running or its TTL expired.
+        This lets the consumer call clear_teleop_targets() and hand full
+        control back to the policy.
+        """
         if self.redis_client is None:
-            return self.last_dof
+            return None
         try:
             data = self.redis_client.get(self.key)
             if data is None:
-                if self._debug_count % 100 == 0:
-                    print(f"[RedisTeleop] No data in '{self.key}'")
-                self._debug_count += 1
-                return self.last_dof
+                if self.last_dof is not None:
+                    print("\n[RedisTeleop] Publisher gone — clearing teleop")
+                    self.last_dof = None
+                return None
             arr = np.frombuffer(data, dtype=np.float32)
             if self.last_dof is None:
                 print(f"[RedisTeleop] First data! len={len(arr)}")
@@ -414,8 +596,31 @@ def main():
     joint_mapping = build_joint_mapping(joint_names)
     mapped_count = sum(1 for v in joint_mapping.values() if v is not None)
     print(f"[Play] Robot joints: {len(joint_names)} | Mapped: {mapped_count}")
-    print(f"[Play] Starting... Press Ctrl+C to stop.")
-    print("-" * 60)
+
+    # Kitchen object resetter — captures initial state of fixtures & objects
+    global _kitchen_resetter
+    _kitchen_resetter = KitchenObjectResetter(env)
+
+    # Keyboard handler for spawn presets
+    kb_handler = SpawnKeyboardHandler()
+    active_preset = 1  # default spawn location
+
+    def print_controls(current_preset, looping=False):
+        print()
+        print("=" * 60)
+        print("  Keyboard Controls")
+        print("=" * 60)
+        for key, (name, x, y, yaw) in SPAWN_PRESETS.items():
+            marker = " <-- active" if key == current_preset else ""
+            print(f"    {key} = {name:12s} ({x:+.2f}, {y:+.2f}, yaw={yaw:3d} deg){marker}")
+        loop_state = " [ON]" if looping else ""
+        print(f"    L = Toggle auto-loop (cycle every 60s){loop_state}")
+        print("    C = Capture current camera position")
+        print("    Ctrl+C = Quit")
+        print("=" * 60)
+        print()
+
+    print_controls(active_preset)
 
     obs, _ = env.reset()
     if teleop_source is not None and hasattr(teleop_source, 'reset'):
@@ -427,6 +632,11 @@ def main():
     start_time = time.time()
     target_dt = 0.02  # 50 Hz
 
+    auto_loop = False
+    LOOP_INTERVAL = 30.0  # seconds per preset
+    loop_timer = time.time()
+    preset_keys = sorted(SPAWN_PRESETS.keys())
+
     step_times = []
     policy_times = []
     teleop_times = []
@@ -434,6 +644,58 @@ def main():
     try:
         while simulation_app.is_running():
             loop_start = time.time()
+
+            # Capture current viewport camera position on "C" key
+            if kb_handler._capture_camera:
+                kb_handler._capture_camera = False
+                from pxr import UsdGeom
+                stage = env.unwrapped.sim.stage
+                cam_prim = stage.GetPrimAtPath("/OmniverseKit_Persp")
+                if cam_prim.IsValid():
+                    xform = UsdGeom.Xformable(cam_prim)
+                    world_tf = xform.ComputeLocalToWorldTransform(0)
+                    pos = world_tf.ExtractTranslation()
+                    # Target = position + forward direction (camera looks down -Z in local frame)
+                    fwd = world_tf.TransformDir((0, 0, -1))
+                    tgt = pos + fwd * 2.0
+                    print(f"\n{'='*60}")
+                    print(f"  Current Camera (copy into CAMERA_PRESETS)")
+                    print(f"  Preset {active_preset} ({SPAWN_PRESETS[active_preset][0]}):")
+                    print(f'    "eye":    ({pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}),')
+                    print(f'    "target": ({tgt[0]:.3f}, {tgt[1]:.3f}, {tgt[2]:.3f}),')
+                    print(f"{'='*60}")
+
+            # Toggle auto-loop on "L" key
+            if kb_handler._toggle_loop:
+                kb_handler._toggle_loop = False
+                auto_loop = not auto_loop
+                loop_timer = time.time()
+                print_controls(active_preset, auto_loop)
+
+            # Auto-loop: cycle to next preset every LOOP_INTERVAL seconds
+            if auto_loop and (time.time() - loop_timer) >= LOOP_INTERVAL:
+                loop_timer = time.time()
+                idx = preset_keys.index(active_preset)
+                active_preset = preset_keys[(idx + 1) % len(preset_keys)]
+                obs = respawn_robot(env, robot, active_preset, reset_objects=True)
+                total_resets += 1
+                teleop_active = False
+                if teleop_source is not None and hasattr(teleop_source, 'reset'):
+                    teleop_source.reset()
+                print_controls(active_preset, auto_loop)
+                continue
+
+            # Check for keyboard spawn request
+            spawn_key = kb_handler.poll()
+            if spawn_key is not None:
+                active_preset = spawn_key
+                obs = respawn_robot(env, robot, active_preset, reset_objects=True)
+                total_resets += 1
+                teleop_active = False
+                if teleop_source is not None and hasattr(teleop_source, 'reset'):
+                    teleop_source.reset()
+                print_controls(active_preset, auto_loop)
+                continue
 
             t0 = time.time()
             with torch.no_grad():
@@ -494,9 +756,25 @@ def main():
             policy_times.append(t_policy * 1000)
             teleop_times.append(t_teleop * 1000)
 
+            # Natural dones (fall, timeout) — respawn at the current
+            # active preset so the robot stays at the same location.
             num_dones = dones.sum().item()
             if num_dones > 0:
                 total_resets += num_dones
+                obs = respawn_robot(env, robot, active_preset)
+                if teleop_source is not None and hasattr(teleop_source, 'reset'):
+                    teleop_source.reset()
+
+            # Drift check — respawn if the robot wanders too far from
+            # its spawn location (e.g. sliding on furniture, pushed away).
+            DRIFT_THRESHOLD = 0.3  # metres
+            _, sx, sy, _ = SPAWN_PRESETS[active_preset]
+            rpos = robot.data.root_pos_w[0]
+            drift = math.sqrt((rpos[0].item() - sx) ** 2 + (rpos[1].item() - sy) ** 2)
+            if drift > DRIFT_THRESHOLD:
+                print(f"\n[Kitchen] Drift {drift:.2f}m > {DRIFT_THRESHOLD}m — respawning")
+                total_resets += 1
+                obs = respawn_robot(env, robot, active_preset)
                 if teleop_source is not None and hasattr(teleop_source, 'reset'):
                     teleop_source.reset()
 
@@ -507,6 +785,7 @@ def main():
                 mean_reward = rewards.mean().item()
                 root_pos = robot.data.root_pos_w
                 mean_height = root_pos[:, 2].mean().item()
+                preset_name = SPAWN_PRESETS[active_preset][0]
 
                 progress_str = ""
                 if teleop_source is not None and hasattr(teleop_source, 'progress'):
@@ -518,7 +797,7 @@ def main():
                                   f"Teleop:{t_teleop*1000:.0f}ms "
                                   f"Step:{t_step*1000:.0f}ms")
 
-                print(f"\r[Play] Step {step} | Reward: {mean_reward:.3f} | "
+                print(f"\r[Play] Step {step} | {preset_name} | Reward: {mean_reward:.3f} | "
                       f"Height: {mean_height:.2f}m | Resets: {int(total_resets)}"
                       f"{progress_str}{timing_str}", end="", flush=True)
 
@@ -530,6 +809,8 @@ def main():
 
     except KeyboardInterrupt:
         print("\n\n[Play] Stopped by user.")
+    finally:
+        kb_handler.close()
 
     # Summary
     elapsed = time.time() - start_time

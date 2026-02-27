@@ -917,18 +917,19 @@ class MultiCamPoseStreamer:
             return None
         
         # Fixed output size to prevent window resizing/flashing
-        # Layout: 2 columns, up to 2 rows (for up to 4 cameras)
-        CELL_W, CELL_H = 640, 360
-        OUTPUT_W, OUTPUT_H = CELL_W * 2, CELL_H * 2  # 1280 x 720
+        # Layout: single column, cameras stacked vertically
+        CELL_W, CELL_H = 480, 270
+        
+        sorted_cam_ids = sorted(frames.keys())
+        num_cams = min(len(sorted_cam_ids), 4)
+        OUTPUT_W = CELL_W
+        OUTPUT_H = CELL_H * num_cams
         
         # Create fixed-size black canvas
         combined = np.zeros((OUTPUT_H, OUTPUT_W, 3), dtype=np.uint8)
         
-        # Process each camera and place in grid
-        sorted_cam_ids = sorted(frames.keys())
-        
         for idx, cam_id in enumerate(sorted_cam_ids):
-            if idx >= 4:  # Max 4 cameras in 2x2 grid
+            if idx >= num_cams:
                 break
                 
             frame = frames[cam_id].copy()
@@ -977,12 +978,9 @@ class MultiCamPoseStreamer:
             # Resize to fit cell
             resized = cv2.resize(frame, (CELL_W, CELL_H))
             
-            # Place in grid (row 0: cameras 0,1; row 1: cameras 2,3)
-            row = idx // 2
-            col = idx % 2
-            y_start = row * CELL_H
-            x_start = col * CELL_W
-            combined[y_start:y_start+CELL_H, x_start:x_start+CELL_W] = resized
+            # Stack vertically
+            y_start = idx * CELL_H
+            combined[y_start:y_start+CELL_H, :] = resized
         
         return combined
     

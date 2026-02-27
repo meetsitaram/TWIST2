@@ -42,6 +42,61 @@ TWIST2_ROOT = os.path.dirname(SCRIPT_DIR)
 sys.path.insert(0, TWIST2_ROOT)
 
 
+# Required MediaPipe landmark indices per tracking mode.
+# Shoulders (11/12) and hips (23/24) are needed for the body-local coordinate
+# frame used by the retargeter, except in arms_only which skips hips.
+TRACKING_MODES = {
+    "upper_body": [11, 12, 13, 14, 15, 16, 23, 24],
+    "full_body":  [11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28],
+    "left_arm":   [11, 12, 13, 15, 23, 24],
+    "right_arm":  [11, 12, 14, 16, 23, 24],
+    "arms_only":  [11, 12, 13, 14, 15, 16],
+}
+
+
+def _default_standing_skeleton():
+    """Return a 33x3 MediaPipe skeleton in a neutral standing pose (metres).
+
+    This is used as the initial `last_valid_skeleton` so that landmarks which
+    are never observed (e.g. feet when tracking upper-body only) already have
+    plausible values for the IK retargeter.
+    """
+    skel = np.zeros((33, 3), dtype=np.float64)
+    # Rough proportions for a 1.7 m human, Y-up, facing +Z
+    # Hips
+    skel[23] = [-0.10, 0.0, 0.0]   # left hip
+    skel[24] = [ 0.10, 0.0, 0.0]   # right hip
+    # Knees
+    skel[25] = [-0.10, -0.45, 0.0]  # left knee
+    skel[26] = [ 0.10, -0.45, 0.0]  # right knee
+    # Ankles
+    skel[27] = [-0.10, -0.85, 0.0]  # left ankle
+    skel[28] = [ 0.10, -0.85, 0.0]  # right ankle
+    # Heels
+    skel[29] = [-0.10, -0.87, -0.04]  # left heel
+    skel[30] = [ 0.10, -0.87, -0.04]  # right heel
+    # Foot indices (toes)
+    skel[31] = [-0.10, -0.87, 0.10]  # left foot index
+    skel[32] = [ 0.10, -0.87, 0.10]  # right foot index
+    # Shoulders
+    skel[11] = [-0.18, 0.50, 0.0]  # left shoulder
+    skel[12] = [ 0.18, 0.50, 0.0]  # right shoulder
+    # Elbows
+    skel[13] = [-0.18, 0.22, 0.0]  # left elbow
+    skel[14] = [ 0.18, 0.22, 0.0]  # right elbow
+    # Wrists
+    skel[15] = [-0.18, -0.02, 0.0]  # left wrist
+    skel[16] = [ 0.18, -0.02, 0.0]  # right wrist
+    # Pinky/index (slightly offset from wrist)
+    skel[17] = [-0.21, -0.05, 0.0]  # left pinky
+    skel[18] = [ 0.21, -0.05, 0.0]  # right pinky
+    skel[19] = [-0.18, -0.05, 0.04]  # left index
+    skel[20] = [ 0.18, -0.05, 0.04]  # right index
+    # Nose/eyes/ears (head) – approximate
+    skel[0] = [0.0, 0.70, 0.05]
+    return skel
+
+
 def load_camera_config():
     """Load camera configuration."""
     project_dir = os.path.dirname(SCRIPT_DIR)
@@ -85,6 +140,11 @@ def main():
                        help="Print timing breakdown to identify lag sources")
     parser.add_argument("--direct", action="store_true",
                        help="Use direct joint mapping instead of IK solver (faster)")
+    
+    # Tracking mode
+    parser.add_argument("--track", type=str, default="upper_body",
+                       choices=["upper_body", "full_body", "left_arm", "right_arm", "arms_only"],
+                       help="Which body parts must be visible for valid tracking")
     
     # Countdown
     parser.add_argument("--countdown", type=int, default=10,
@@ -263,6 +323,11 @@ def main():
     fail_ik_none = 0
     fail_ik_exception = 0
     
+    # Hold-last-position: start with a neutral standing pose so unseen
+    # landmarks (e.g. feet when tracking upper-body only) already have
+    # plausible values for the IK retargeter.
+    last_valid_skeleton = _default_standing_skeleton()
+    
     # Timing stats
     timing_skel = []
     timing_ik = []
@@ -278,16 +343,26 @@ def main():
             skeleton_3d, reproj_error = streamer.get_3d_skeleton()
             t_skel = time.time() - t0
             
-            # Check skeleton validity and run retargeting
+            # Check skeleton validity: ALL required landmarks must be finite
+            required = TRACKING_MODES[args.track]
             skeleton_valid = False
             if skeleton_3d is None:
                 fail_no_skeleton += 1
-            elif not np.isfinite(skeleton_3d).all():
+            elif not np.isfinite(skeleton_3d[required]).all():
                 fail_nan_skeleton += 1
             else:
                 skeleton_valid = True
             
-            # Run retargeting if skeleton is valid
+            if skeleton_valid:
+                # Fill NaN non-required landmarks with last known values
+                # (hold-last-position keeps the skeleton consistent across frames)
+                nan_mask = np.isnan(skeleton_3d).any(axis=1)
+                skeleton_3d[nan_mask] = last_valid_skeleton[nan_mask]
+                # Update last-valid only for landmarks that were actually observed
+                observed = ~nan_mask
+                last_valid_skeleton[observed] = skeleton_3d[observed]
+            
+            # Run retargeting only with fully valid skeleton
             if skeleton_valid:
                 t1 = time.time()
                 try:
@@ -307,12 +382,12 @@ def main():
                         result = retargeter.retarget(skeleton_3d, fixed_base=True)
                         t_ik = time.time() - t1
                         
-                        if result is not None:
-                            # Extract joint positions (29 DOF)
+                        if result is not None and result.get('qpos') is not None:
                             dof_pos = result['qpos'][7:]  # Skip floating base
                             last_dof_pos = dof_pos.copy()
                             last_ik_error = result.get('error', 0.0)
                         else:
+                            result = None
                             fail_ik_none += 1
                     
                     if result is not None:
@@ -327,11 +402,15 @@ def main():
                             # Sync viewer
                             mj_viewer.sync()
                         
-                        # Publish to Redis
+                        # Publish to Redis with short TTL (300ms).
+                        # If the publisher skips ~9 frames (bad tracking),
+                        # the key expires and the consumer reverts to
+                        # policy-only control until fresh data arrives.
                         t2 = time.time()
                         redis_client.set(
                             args.redis_key,
-                            dof_pos.astype(np.float32).tobytes()
+                            dof_pos.astype(np.float32).tobytes(),
+                            px=300,
                         )
                         t_redis = time.time() - t2
                         
@@ -363,26 +442,25 @@ def main():
             
             # Display handling - vertical stack layout
             if args.display:
-                # Get individual frames for vertical stacking
-                frames_dict, _ = streamer.get_latest_frames()
-                
-                if frames_dict:
-                    # Create vertical stack of camera views
-                    CELL_W, CELL_H = 480, 270  # Smaller for vertical layout
-                    sorted_cam_ids = sorted(frames_dict.keys())
-                    
-                    stacked_frames = []
-                    for cam_id in sorted_cam_ids[:3]:  # Max 3 cameras
-                        frame = frames_dict[cam_id]
-                        resized = cv2.resize(frame, (CELL_W, CELL_H))
-                        # Add camera label
-                        cv2.putText(resized, f"Cam {cam_id}", (10, 25),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-                        stacked_frames.append(resized)
-                    
-                    if stacked_frames:
-                        overlay = np.vstack(stacked_frames)
-                        cv2.imshow(window_name, overlay)
+                display_frame = streamer.get_display_frame()
+                if display_frame is not None:
+                    cv2.imshow(window_name, display_frame)
+                else:
+                    # Fallback to raw frames if display frame not ready
+                    frames_dict, _ = streamer.get_latest_frames()
+                    if frames_dict:
+                        CELL_W, CELL_H = 480, 270
+                        sorted_cam_ids = sorted(frames_dict.keys())
+                        stacked_frames = []
+                        for cam_id in sorted_cam_ids[:3]:
+                            frame = frames_dict[cam_id]
+                            resized = cv2.resize(frame, (CELL_W, CELL_H))
+                            cv2.putText(resized, f"Cam {cam_id}", (10, 25),
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                            stacked_frames.append(resized)
+                        if stacked_frames:
+                            overlay = np.vstack(stacked_frames)
+                            cv2.imshow(window_name, overlay)
             
             # Key handling
             key = cv2.waitKey(1) & 0xFF if args.display else -1

@@ -21,6 +21,11 @@ from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 from isaaclab_tasks.manager_based.locomotion.velocity.config.g1.flat_env_cfg import G1FlatEnvCfg
 from isaaclab_tasks.manager_based.locomotion.velocity.velocity_env_cfg import RewardsCfg
 
+# G1_CFG has full collision meshes (for object interaction) but causes
+# physics artifacts (mesh entanglement) in cluttered scenes.
+# G1_MINIMAL_CFG strips most collision meshes for stable, fast simulation.
+from isaaclab_assets import G1_CFG, G1_MINIMAL_CFG
+
 # Import MDP functions
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
 
@@ -289,6 +294,12 @@ class G1MotionMimicEnvCfg(G1FlatEnvCfg):
     def __post_init__(self):
         # Post init of parent
         super().__post_init__()
+        
+        # G1_CFG: full collision meshes for object interaction.
+        # G1_MINIMAL_CFG: stripped collision meshes for stable, fast simulation.
+        # Full collisions can cause mesh entanglement in cluttered scenes.
+        self.scene.robot = G1_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+        self.scene.robot.spawn.articulation_props.enabled_self_collisions = False
         
         # Key bodies for tracking
         # NOTE: Motion data and Isaac Lab robot use different naming!

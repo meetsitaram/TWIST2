@@ -84,6 +84,62 @@ python replay_motion_mujoco.py --motion sample_motions/too-fast.pkl --speed 0.5
 python sim2sim_mujoco.py --list-motions
 ```
 
+### Isaac Lab kitchen scene (play_kitchen_teleop.py)
+
+Run the policy in the World Labs kitchen scene with Isaac Lab. Requires `env_isaaclab` conda environment.
+
+```bash
+conda activate env_isaaclab
+cd ~/projects/g1-pick-n-place/TWIST2
+
+# Play a recorded motion (pkl overlay on upper body)
+python deploy_sim2real/play_kitchen_teleop.py --teleop pkl --motion_file deploy_sim2real/sample_motions/open-doors.pkl --motion_loop
+
+# Play a different motion once (no loop)
+python deploy_sim2real/play_kitchen_teleop.py --teleop pkl --motion_file deploy_sim2real/sample_motions/pick-place-2.pkl
+
+# Live teleop from cameras via Redis (run isaac_lab_teleop_publisher.py in another terminal)
+python deploy_sim2real/play_kitchen_teleop.py --teleop redis
+
+# Policy only (no teleop overlay)
+python deploy_sim2real/play_kitchen_teleop.py --teleop none
+```
+
+For live Redis teleop, start the camera publisher in a separate terminal first:
+
+```bash
+conda activate gmr
+cd ~/projects/g1-pick-n-place/TWIST2/deploy_real
+python isaac_lab_teleop_publisher.py --display --track upper_body
+```
+
+#### Kitchen Scene Keyboard Controls
+
+While the simulation is running, press these keys **in the Isaac Sim viewport window**:
+
+| Key | Action |
+|-----|--------|
+| **1** | Spawn at fridge |
+| **2** | Spawn at stove |
+| **3** | Spawn at dishwasher |
+| **4** | Spawn at microwave |
+| **L** | Toggle auto-loop (cycles through all 4 locations every 30s) |
+| **C** | Capture current viewport camera position (prints eye/target to terminal) |
+| **Ctrl+C** | Quit |
+
+Switching locations (via number keys or auto-loop) also resets all kitchen fixtures (doors, drawers) and loose objects (pots, mugs, kettle) to their initial positions.
+
+The robot automatically respawns at the current location if it drifts more than 0.3m from its spawn point or its pelvis drops below 0.65m (fall detection).
+
+#### Teleop Data Flow (Redis)
+
+The teleop pipeline uses Redis as a message broker:
+
+1. **Publisher** (`deploy_real/isaac_lab_teleop_publisher.py`): Captures human pose from cameras, runs IK retargeting, publishes joint targets to Redis with a 300ms TTL.
+2. **Consumer** (`deploy_sim2real/play_kitchen_teleop.py`): Reads joint targets from Redis, blends them with the trained policy for upper body control.
+
+When the publisher stops or loses tracking, the Redis key expires (TTL) and the consumer automatically reverts to policy-only control.
+
 ## Directory Structure
 
 ```
