@@ -1,0 +1,32 @@
+{
+  "_comment": "Tunable parameters for scene assembly and simulation launch.",
+
+  "kitchen_scale": {
+    "value": 1.47,
+    "description": "Uniform scale applied to the World Labs kitchen shell. Increased from 1.25 to 1.47 so that NVIDIA fixtures at natural MuJoCo scale (1.0) fit proportionally — previously fixtures were 0.85x which broke PhysX articulation. World Labs output is ~2.5m wide; at 1.47x → ~3.7m wide, comfortably fitting standard appliances.",
+    "range": [1.0, 2.0]
+  },
+
+  "ground_plane_size": {
+    "value": [5.0, 5.0],
+    "description": "Ground plane dimensions in meters. Slightly larger to match increased kitchen scale."
+  },
+
+  "camera": {
+    "eye": [1.2, 1.2, 0.0],
+    "target": [0.0, 0.0, -0.3],
+    "move_speed": 0.01,
+    "description": "Initial viewport camera position (eye) and look-at (target). Move speed controls WASD navigation rate (default Isaac Sim is ~1.0, lower = slower). 0.01 is good for a ~3m kitchen."
+  },
+
+  "g1_spawn": {
+    "position": [0.0, 0.0, 0.0],
+    "pelvis_offset_z": 0.74,
+    "description": "G1 robot spawn position. Final Z = kitchen_floor_z * kitchen_scale + pelvis_offset_z. Position [0,0,0] = center of kitchen."
+  },
+
+  "kitchen_floor_z": {
+    "value": -0.92,
+    "description": "Z coordinate of the kitchen floor in the unscaled mesh (after Y-to-Z axis swap). Used to compute G1 spawn height."
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "_comment": "Fixture placement config. Fixtures at natural MuJoCo scale (1.0) — no scaling applied to avoid PhysX articulation issues. Kitchen shell is scaled up instead (see scene_params.json kitchen_scale). Positions scaled from 1.25x-kitchen / 0.85x-fixture era by 1.176x factor.",
+  "_kitchen_bounds_scaled": {
+    "X": [-1.72, 1.88],
+    "Y": [-1.87, 1.82],
+    "floor_z": -1.352,
+    "ceiling_z": 1.352,
+    "counter_z": -0.23,
+    "note": "Interior after 1.47x scale. Counter height = floor + ~0.91m."
+  },
+
+  "_articulation_note": "asset_usd points to articulated USD files produced by Isaac Sim's MJCF importer (fix_base=True). These contain full body/joint hierarchy with revolute joints (doors), prismatic joints (drawers/racks), per-body collision primitives, and visual meshes. Scale MUST remain 1.0 to avoid PhysX solver freeze.",
+
+  "fixtures": [
+    {
+      "key": "fridge",
+      "asset_usd": "articulated/fridge_articulated.usd",
+      "model": "Refrigerator038",
+      "dimensions_m": [0.722, 0.716, 1.565],
+      "position": [-0.6858, 1.5097, 0.8271],
+      "rotation_z_deg": 0.0,
+      "scale": 1.0,
+      "articulation": {
+        "joints": ["freezer0_door_joint", "fridge_door_joint", "fridge_drawer0_joint"],
+        "note": "freezer0=slide(0-0.4m), fridge_door=hinge(0-90deg), drawer=slide(0-0.5m)"
+      },
+      "description": "In the alcove between upper cabinets, back wall. Positions scaled from manual placement."
+    },
+    {
+      "key": "dishwasher",
+      "asset_usd": "articulated/dishwasher_articulated.usd",
+      "model": "Dishwasher063",
+      "dimensions_m": [0.571, 0.506, 0.844],
+      "position": [-1.3518, -0.3494, 0.3543],
+      "rotation_z_deg": 88.6,
+      "scale": 1.0,
+      "articulation": {
+        "joints": ["door_joint", "rack0_joint", "rack1_joint", "button_lock_joint", "button_power_joint"],
+        "note": "door=hinge(0-31.7deg), rack0=slide(0-0.14m), rack1=slide(0-0.297m), buttons=slide"
+      },
+      "description": "Under counter, left wall near sink. Rotated ~90deg to face into kitchen."
+    },
+    {
+      "key": "microwave_counter",
+      "asset_usd": "articulated/microwave_counter_articulated.usd",
+      "model": "Microwave048",
+      "dimensions_m": [0.475, 0.263, 0.308],
+      "position": [0.5760, 1.4405, 0.9953],
+      "rotation_z_deg": 0.0,
+      "scale": 1.0,
+      "articulation": {
+        "joints": ["microjoint", "Button001_joint", "Button002_joint", "Disc001_joint"],
+        "note": "door=hinge(-90-0deg), buttons=slide, disc=hinge(turntable)"
+      },
+      "description": "On countertop, back wall right of center."
+    }
+  ]
+}

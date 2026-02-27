@@ -1,0 +1,88 @@
+{
+  "_comment": "Manually-placed graspable objects. Positions are in the same coordinate frame as fixture_placements.json (world coords after kitchen scale). The stove/range surface and countertop are baked into the World Labs room mesh at approximately Z\u22480.84.",
+  "_coordinate_reference": {
+    "counter_surface_z": 0.84,
+    "back_wall_y": 1.45,
+    "stove_x_range": [
+      1.0,
+      1.6
+    ],
+    "counter_x_range": [
+      -0.5,
+      0.9
+    ],
+    "note": "Stove is on the back wall, right of center. Counter runs along back and left walls."
+  },
+  "objects": [
+    {
+      "key": "pot_on_stove_1",
+      "asset_usd": "pot.usd",
+      "asset_key": "pot",
+      "position": [
+        1.3163,
+        -0.054,
+        0.86
+      ],
+      "rotation_z_deg": 15.0,
+      "scale": 1.0,
+      "mass_kg": 1.5,
+      "description": "Cooking pot on the left burner of the stove."
+    },
+    {
+      "key": "pot_on_stove_2",
+      "asset_usd": "pot.usd",
+      "asset_key": "pot",
+      "position": [
+        0.362,
+        -1.3338,
+        0.86
+      ],
+      "rotation_z_deg": -10.0,
+      "scale": 1.0,
+      "mass_kg": 1.5,
+      "description": "Cooking pot on the right burner of the stove."
+    },
+    {
+      "key": "mug_counter_1",
+      "asset_usd": "mug.usd",
+      "asset_key": "mug",
+      "position": [
+        0.5416,
+        -1.2666,
+        0.84
+      ],
+      "rotation_z_deg": 30.0,
+      "scale": 1.0,
+      "mass_kg": 0.3,
+      "description": "Coffee mug on counter, between fridge and stove area."
+    },
+    {
+      "key": "mug_counter_2",
+      "asset_usd": "mug.usd",
+      "asset_key": "mug",
+      "position": [
+        0.2144,
+        1.3225,
+        0.84
+      ],
+      "rotation_z_deg": -45.0,
+      "scale": 1.0,
+      "mass_kg": 0.3,
+      "description": "Second coffee mug on counter."
+    },
+    {
+      "key": "kettle_counter",
+      "asset_usd": "kettle.usd",
+      "asset_key": "kettle",
+      "position": [
+        1.3272,
+        0.2742,
+        0.84
+      ],
+      "rotation_z_deg": 0.0,
+      "scale": 1.0,
+      "mass_kg": 0.8,
+      "description": "Kettle on counter near the stove."
+    }
+  ]
+}
