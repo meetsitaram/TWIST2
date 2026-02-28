@@ -72,7 +72,7 @@ def build_joint_mapping(joint_names: list) -> dict:
     Uses centralized G1RobotConfig for consistent mapping.
     """
     return G1RobotConfig.build_mujoco_to_isaaclab_mapping(joint_names)
-
+isaac_lab_teleop_publisher.py
 
 def load_motion(motion_file: str) -> dict:
     """Load motion data from PKL or NPZ file."""

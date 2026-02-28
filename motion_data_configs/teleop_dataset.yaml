@@ -1,48 +1,51 @@
 # TWIST2 Motion Dataset Config
-# Generated from teleop episodes
-# Config: teleop_dataset
+# Updated to match available motion files
 
-# Relative path from this YAML file's directory (works on any machine)
 root_path: ../datasets/teleop_motions
 
 motions:
-  - file: baseline_001.pkl
+  # Stage 3 upper body motions
+  - file: stage3_upper_body/both-hands.pkl
     weight: 1.0
-  - file: baseline_002.pkl
+  - file: stage3_upper_body/both-hands-2.pkl
     weight: 1.0
-  - file: elbow_track_001.pkl
+  - file: stage3_upper_body/left-hand.pkl
     weight: 1.0
-  - file: elbow_track_002.pkl
+  - file: stage3_upper_body/right-hand.pkl
     weight: 1.0
-  - file: elbow_track_003.pkl
+  - file: stage3_upper_body/open-doors.pkl
     weight: 1.0
-  - file: elbow_track_004.pkl
+  - file: stage3_upper_body/pick-place.pkl
     weight: 1.0
-  - file: elbow_track_005.pkl
+  - file: stage3_upper_body/pick-place-2.pkl
     weight: 1.0
-  - file: elbow_track_006.pkl
+  - file: stage3_upper_body/pick-place-3.pkl
     weight: 1.0
-  - file: elbow_track_007.pkl
+  - file: stage3_upper_body/pick-place-both-hands.pkl
     weight: 1.0
-  - file: elbow_track_008.pkl
+  - file: stage3_upper_body/wave.pkl
     weight: 1.0
-  - file: hands_only_001.pkl
+  - file: stage3_upper_body/wipe.pkl
     weight: 1.0
-  - file: smoothed_001.pkl
+  - file: stage3_upper_body/cut.pkl
     weight: 1.0
-  - file: smoothed_002.pkl
+  - file: stage3_upper_body/micro.pkl
     weight: 1.0
-  - file: smoothed_003.pkl
+  - file: stage3_upper_body/too-fast.pkl
     weight: 1.0
-  - file: smoothed_006.pkl
+  # Walking motions
+  - file: baby_steps/steps_001.pkl
     weight: 1.0
-  - file: smoothed_008.pkl
+  - file: baby_steps/steps_002.pkl
     weight: 1.0
-  - file: smoothed_009.pkl
+  - file: baby_steps/steps_003.pkl
     weight: 1.0
-  - file: smoothed_010.pkl
+  - file: big_steps/big_steps_001.pkl
     weight: 1.0
-  - file: smoothed_011.pkl
+  - file: big_steps/big_steps_002.pkl
     weight: 1.0
-  - file: wholebody_walk_001.pkl
+  # Push balance
+  - file: push_balance/push_001.pkl
+    weight: 1.0
+  - file: push_balance/push_002.pkl
     weight: 1.0

@@ -1,4 +1,4 @@
-# Multi-Camera Calibration Guide
+":# Multi-Camera Calibration Guide
 
 This guide covers the camera calibration pipeline for FreeMoCap integration with TWIST2.
 

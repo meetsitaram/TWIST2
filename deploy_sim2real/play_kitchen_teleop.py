@@ -76,6 +76,10 @@ parser.add_argument("--direct_override", action="store_true",
                     help="Directly override upper body ACTIONS instead of injecting targets")
 parser.add_argument("--no_realtime", action="store_true",
                     help="Disable real-time throttling")
+parser.add_argument("--auto_loop", action="store_true",
+                    help="Start with auto-loop enabled (cycle spawn presets)")
+parser.add_argument("--loop_interval", type=float, default=30.0,
+                    help="Seconds per spawn preset when auto-looping (default: 30)")
 parser.add_argument("--debug_timing", action="store_true",
                     help="Print timing breakdown")
 
@@ -605,6 +609,9 @@ def main():
     kb_handler = SpawnKeyboardHandler()
     active_preset = 1  # default spawn location
 
+    auto_loop = args.auto_loop
+    LOOP_INTERVAL = args.loop_interval
+
     def print_controls(current_preset, looping=False):
         print()
         print("=" * 60)
@@ -614,13 +621,13 @@ def main():
             marker = " <-- active" if key == current_preset else ""
             print(f"    {key} = {name:12s} ({x:+.2f}, {y:+.2f}, yaw={yaw:3d} deg){marker}")
         loop_state = " [ON]" if looping else ""
-        print(f"    L = Toggle auto-loop (cycle every 60s){loop_state}")
+        print(f"    L = Toggle auto-loop (cycle every {LOOP_INTERVAL:.0f}s){loop_state}")
         print("    C = Capture current camera position")
         print("    Ctrl+C = Quit")
         print("=" * 60)
         print()
 
-    print_controls(active_preset)
+    print_controls(active_preset, auto_loop)
 
     obs, _ = env.reset()
     if teleop_source is not None and hasattr(teleop_source, 'reset'):
@@ -631,9 +638,6 @@ def main():
     teleop_active = False
     start_time = time.time()
     target_dt = 0.02  # 50 Hz
-
-    auto_loop = False
-    LOOP_INTERVAL = 30.0  # seconds per preset
     loop_timer = time.time()
     preset_keys = sorted(SPAWN_PRESETS.keys())
 
@@ -680,8 +684,6 @@ def main():
                 obs = respawn_robot(env, robot, active_preset, reset_objects=True)
                 total_resets += 1
                 teleop_active = False
-                if teleop_source is not None and hasattr(teleop_source, 'reset'):
-                    teleop_source.reset()
                 print_controls(active_preset, auto_loop)
                 continue
 
@@ -692,8 +694,6 @@ def main():
                 obs = respawn_robot(env, robot, active_preset, reset_objects=True)
                 total_resets += 1
                 teleop_active = False
-                if teleop_source is not None and hasattr(teleop_source, 'reset'):
-                    teleop_source.reset()
                 print_controls(active_preset, auto_loop)
                 continue
 
@@ -762,8 +762,6 @@ def main():
             if num_dones > 0:
                 total_resets += num_dones
                 obs = respawn_robot(env, robot, active_preset)
-                if teleop_source is not None and hasattr(teleop_source, 'reset'):
-                    teleop_source.reset()
 
             # Drift check — respawn if the robot wanders too far from
             # its spawn location (e.g. sliding on furniture, pushed away).
@@ -775,8 +773,6 @@ def main():
                 print(f"\n[Kitchen] Drift {drift:.2f}m > {DRIFT_THRESHOLD}m — respawning")
                 total_resets += 1
                 obs = respawn_robot(env, robot, active_preset)
-                if teleop_source is not None and hasattr(teleop_source, 'reset'):
-                    teleop_source.reset()
 
             step += 1
 

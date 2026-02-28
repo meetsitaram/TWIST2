@@ -13,6 +13,7 @@ that all cameras are working correctly.
 import cv2
 import os
 import argparse
+import time
 from datetime import datetime
 
 
@@ -42,8 +43,9 @@ def capture_views(camera_ids, output_dir, resolution=(1280, 720)):
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, resolution[0])
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, resolution[1])
         
-        # Warm up (discard first few frames)
-        for _ in range(10):
+        # Warm up: discard frames while auto-exposure settles
+        time.sleep(1.0)
+        for _ in range(30):
             cap.read()
         
         # Capture frame
@@ -75,10 +77,25 @@ def capture_views(camera_ids, output_dir, resolution=(1280, 720)):
     return captured
 
 
+def load_camera_ids_from_config():
+    """Read camera IDs from calibration/camera_config.yaml."""
+    import yaml
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_dir = os.path.dirname(os.path.dirname(script_dir))
+    config_path = os.path.join(project_dir, "calibration", "camera_config.yaml")
+    if os.path.exists(config_path):
+        with open(config_path) as f:
+            cfg = yaml.safe_load(f)
+        ids = cfg.get("camera_ids", [])
+        if ids:
+            return ids
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(description="Capture single frame from each camera")
-    parser.add_argument("--cameras", type=int, nargs="+", default=[2, 4, 6],
-                       help="Camera IDs to capture from (default: 2 4 6)")
+    parser.add_argument("--cameras", type=int, nargs="+", default=None,
+                       help="Camera IDs to capture from (default: read from camera_config.yaml)")
     parser.add_argument("--output", type=str, 
                        default="../calibration/camera_views",
                        help="Output directory for images")
@@ -87,12 +104,15 @@ def main():
     
     args = parser.parse_args()
     
+    camera_ids = args.cameras or load_camera_ids_from_config() or [0, 1, 2]
+    print(f"Using camera IDs: {camera_ids}")
+    
     # Get absolute path for output
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_dir = os.path.dirname(os.path.dirname(script_dir))  # Go up from utils/ to TWIST2/
     output_dir = os.path.join(project_dir, "calibration", "camera_views")
     
-    capture_views(args.cameras, output_dir, tuple(args.resolution))
+    capture_views(camera_ids, output_dir, tuple(args.resolution))
     
     print("\nTo view images:")
     print(f"  xdg-open {output_dir}")

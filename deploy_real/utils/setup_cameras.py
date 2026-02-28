@@ -13,6 +13,7 @@ Usage:
     python setup_cameras.py
 """
 
+import argparse
 import cv2
 import os
 import yaml
@@ -97,8 +98,17 @@ def capture_test_images(cameras, output_dir):
     return output_dir
 
 
-def generate_config(camera_mapping, output_path):
+def generate_config(camera_mapping, output_path, board_config=None):
     """Generate camera_config.yaml file."""
+    
+    if board_config is None:
+        board_config = {
+            'squares_x': 4,
+            'squares_y': 6,
+            'square_size_mm': 60.0,
+            'marker_size_mm': 45.0,
+            'dictionary': 'DICT_4X4_50'
+        }
     
     config = {
         'capture': {
@@ -109,13 +119,7 @@ def generate_config(camera_mapping, output_path):
         'cameras': {},
         'camera_ids': [],
         'calibration': {
-            'board': {
-                'squares_x': 9,
-                'squares_y': 6,
-                'square_size_mm': 30.0,
-                'marker_size_mm': 22.0,
-                'dictionary': 'DICT_4X4_50'
-            },
+            'board': board_config,
             'thresholds': {
                 'max_reprojection_error': 1.0,
                 'min_detected_frames': 50
@@ -149,6 +153,14 @@ def generate_config(camera_mapping, output_path):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Interactive Camera Setup Tool")
+    parser.add_argument("--squares_x", type=int, default=4, help="Charuco board squares in X (default: 4)")
+    parser.add_argument("--squares_y", type=int, default=6, help="Charuco board squares in Y (default: 6)")
+    parser.add_argument("--square_size", type=float, default=60.0, help="Square size in mm (default: 60.0)")
+    parser.add_argument("--marker_size", type=float, default=45.0, help="Marker size in mm (default: 45.0)")
+    parser.add_argument("--dictionary", type=str, default="DICT_4X4_50", help="ArUco dictionary (default: DICT_4X4_50)")
+    args = parser.parse_args()
+
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_dir = os.path.dirname(os.path.dirname(script_dir))  # Go up from utils/ to TWIST2/
     calibration_dir = os.path.join(project_dir, "calibration")
@@ -213,8 +225,15 @@ def main():
             return
     
     # Step 4: Generate config
+    board_config = {
+        'squares_x': args.squares_x,
+        'squares_y': args.squares_y,
+        'square_size_mm': args.square_size,
+        'marker_size_mm': args.marker_size,
+        'dictionary': args.dictionary,
+    }
     config_path = os.path.join(calibration_dir, "camera_config.yaml")
-    generate_config(camera_mapping, config_path)
+    generate_config(camera_mapping, config_path, board_config=board_config)
     
     print("\n" + "=" * 60)
     print("  Setup Complete!")

@@ -1251,8 +1251,8 @@ def main():
                        help="Auto-stop after this many DIVERSE frames per camera (default: 60)")
     parser.add_argument("--slow", action="store_true",
                        help="Slow capture mode - waits 0.5s between saves (better coverage)")
-    parser.add_argument("--sync", action="store_true",
-                       help="Sync mode - only captures when board is still AND visible to 2+ cameras (RECOMMENDED)")
+    parser.add_argument("--no-sync", action="store_true",
+                       help="Disable sync mode (default: sync ON - captures when board is still AND visible to 2+ cameras)")
     args = parser.parse_args()
     
     # Get paths
@@ -1302,15 +1302,15 @@ def main():
                 all_timestamps = captured_data.get('timestamps', {cam_id: [] for cam_id in camera_ids})
             else:
                 all_corners, all_ids, all_timestamps = capture_calibration_data(
-                    camera_ids, resolution, detector, args.target_frames, calibration_dir, args.slow, args.sync
+                    camera_ids, resolution, detector, args.target_frames, calibration_dir, args.slow, not args.no_sync
                 )
         else:
             all_corners, all_ids, all_timestamps = capture_calibration_data(
-                camera_ids, resolution, detector, args.target_frames, calibration_dir, args.slow, args.sync
+                camera_ids, resolution, detector, args.target_frames, calibration_dir, args.slow, not args.no_sync
             )
     else:
         all_corners, all_ids, all_timestamps = capture_calibration_data(
-            camera_ids, resolution, detector, args.target_frames, calibration_dir, args.slow, args.sync
+            camera_ids, resolution, detector, args.target_frames, calibration_dir, args.slow, not args.no_sync
         )
     
     # Run calibration with timestamp-based frame matching

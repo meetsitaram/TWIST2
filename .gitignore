@@ -98,3 +98,12 @@ deploy_real/mediapipe_gmr_adapter.py
 deploy_real/mediapipe_to_g1_gmr.py
 deploy_real/mediapipe_to_smplx_v2.py
 deploy_real/mediapipe_to_smplx_v3.py
+
+# Build artifacts
+*.egg-info/
+
+# Experiment tracking
+wandb/
+
+# External dependency (installed via pip -e)
+legged_gym/

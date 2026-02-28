@@ -125,4 +125,4 @@ fridge = Articulation(
 
 This scene was exported from the [g1-kitchen-sim](https://github.com/your-org/g1-kitchen-sim) pipeline.
 Source commit: `2547423`
-Export date: 2026-02-26 22:24
+Export date: 2026-02-26 22:39
