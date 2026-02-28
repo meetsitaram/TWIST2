@@ -136,7 +136,7 @@ def build_joint_mapping(joint_names: list) -> dict:
 # Coordinates are in the kitchen world frame (origin = center of kitchen).
 # Yaw 0 = facing +X, 90 = facing +Y (toward back wall), 180 = facing -X, etc.
 SPAWN_PRESETS = {
-    1: ("fridge",      -0.69,  0.75,   90),  # in front of fridge, facing it
+    1: ("fridge",      -0.85,  0.60,   75),  # offset left of fridge, angled toward door
     2: ("stove",        0.95,  0.20,    0),  # in front of stove, facing right toward it
     3: ("dishwasher",  -0.80, -0.10,  180),  # facing dishwasher (pulled back)
     4: ("microwave",    0.58,  0.75,   90),  # in front of microwave
@@ -144,7 +144,7 @@ SPAWN_PRESETS = {
 
 # Per-preset camera positions captured from the Isaac Sim viewport.
 CAMERA_PRESETS = {
-    1: {"eye": (1.148, -0.743, 1.618), "target": (-0.284, 0.494, 0.968)},   # fridge
+    1: {"eye": (-1.332, -0.509, 1.617), "target": (-0.556, 1.247, 1.058)},  # fridge
     2: {"eye": (0.593, 1.069, 1.792),  "target": (1.551, -0.262, 0.648)},   # stove
     3: {"eye": (-0.251, -1.541, 1.611), "target": (-1.182, -0.073, 0.622)}, # dishwasher
     4: {"eye": (-0.346, -0.379, 1.805), "target": (0.788, 0.962, 0.848)},   # microwave
